@@ -1,0 +1,17 @@
+title = "Brainy — gitleaks config"
+
+# Extends gitleaks' own maintained default rule set (common API key/token/secret
+# patterns across providers) rather than hand-rolling custom detection rules.
+# See docs/rules-decisions.md ADR-0033 for why this exists, and
+# docs/runbooks/git-basics.md / docs/runbooks/rotate-api-key.md for what to do
+# if this ever actually blocks a commit for real.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-safe strings that otherwise look like secrets"
+regexes = [
+  # Placeholder/example values used in documentation, never real keys
+  '''sk-REPLACE_ME''',
+  '''your-api-key-here''',
+]
