@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Local database — never commit real data (ADR-0033, ADR-0049 §6)
+brainy.db
+brainy.db-journal
+brainy.db-wal
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Build output
+packages/tokens/build/
+apps/web/.next/
+apps/server/dist/
+storybook-static/
+
+# Claude Code — personal/local settings only; .claude/settings.json (team-shared) and
+# .claude/rules, .claude/skills are intentionally committed (ADR-0050)
+.claude/settings.local.json
+
+# OS / editor junk
+Thumbs.db
+.DS_Store
+*.log
+npm-debug.log*
+
+# VS Code — keep shared workspace settings if any are added later; ignore personal overrides
+.vscode/*
+!.vscode/extensions.json
