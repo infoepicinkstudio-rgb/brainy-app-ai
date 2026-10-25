@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install)",
+      "Bash(npm run dev)",
+      "Bash(npm run dev -w apps/web)",
+      "Bash(npm run dev -w apps/server)",
+      "Bash(npm run build)",
+      "Bash(npm run build -w apps/web)",
+      "Bash(npm run build -w apps/server)",
+      "Bash(npm run build -w packages/tokens)",
+      "Bash(npm run lint)",
+      "Bash(npm run db:generate -w apps/server)",
+      "Bash(npm run db:migrate -w apps/server)",
+      "Bash(npm run backup-db)",
+      "Bash(npm run storybook)",
+      "Bash(npm run build-storybook)"
+    ]
+  }
+}

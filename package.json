@@ -1,0 +1,28 @@
+{
+  "name": "brainy-app-ai",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Brainy — Istiyak's personal, local-first infinite-canvas research/synthesis tool.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n tokens,server,web -c yellow,blue,green \"npm run build -w packages/tokens\" \"npm run dev -w apps/server\" \"npm run dev -w apps/web\"",
+    "build": "npm run build -w packages/tokens && npm run build -w apps/server && npm run build -w apps/web",
+    "lint": "npm run lint -w apps/web",
+    "backup-db": "node tools/scripts/backup-db.mjs",
+    "storybook": "storybook dev -p 6006 -c .storybook",
+    "build-storybook": "storybook build -c .storybook"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.2",
+    "storybook": "^10.6.3",
+    "@storybook/nextjs": "^10.6.3",
+    "@storybook/addon-a11y": "^10.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

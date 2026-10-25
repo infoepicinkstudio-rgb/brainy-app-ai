@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+/* Inter, self-hosted (ADR-0025, ADR-0056) — @fontsource ships the actual font files, so
+   this never depends on reaching Google's servers at build or run time, unlike
+   next/font/google's live fetch. */
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+
+/* Generated from packages/tokens — never edit this import's target by hand, and never
+   hardcode a color/spacing value below instead of adding a token. See architecture.md §7,
+   ADR-0024, ADR-0031. Run `npm run build -w packages/tokens` after changing a token source. */
+@import "../../../packages/tokens/build/css/variables.css";
+
+/* Maps generated token CSS vars into Tailwind v4's theme namespace, so e.g.
+   bg-background-page / text-text-primary / border-border-default become real
+   utility classes instead of needing arbitrary-value syntax everywhere. */
+@theme inline {
+  --color-background-page: var(--color-background-page);
+  --color-background-surface: var(--color-background-surface);
+  --color-background-surface-raised: var(--color-background-surface-raised);
+  --color-background-muted: var(--color-background-muted);
+  --color-background-accent: var(--color-background-accent);
+  --color-background-accent-muted: var(--color-background-accent-muted);
+  --color-background-danger: var(--color-background-danger);
+
+  --color-text-primary: var(--color-text-primary);
+  --color-text-secondary: var(--color-text-secondary);
+  --color-text-muted: var(--color-text-muted);
+  --color-text-on-accent: var(--color-text-on-accent);
+  --color-text-accent: var(--color-text-accent);
+  --color-text-danger: var(--color-text-danger);
+  --color-text-success: var(--color-text-success);
+
+  --color-border-default: var(--color-border-default);
+  --color-border-muted: var(--color-border-muted);
+  --color-border-focus: var(--color-border-focus);
+  --color-border-danger: var(--color-border-danger);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-full: var(--radius-full);
+
+  --font-sans: var(--font-family-default);
+}
+
+/* Single light theme for MVP — no dark mode media query (ADR-0027). */
+
+body {
+  background: var(--color-background-page);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+}

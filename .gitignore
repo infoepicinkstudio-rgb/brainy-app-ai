@@ -5,6 +5,10 @@ node_modules/
 brainy.db
 brainy.db-journal
 brainy.db-wal
+brainy.db-shm
+
+# Local DB backups (tools/scripts/backup-db.mjs) — same sensitivity as brainy.db itself
+backups/
 
 # Secrets
 .env
