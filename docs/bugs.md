@@ -14,6 +14,7 @@
 ## Template
 
 ```
+AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
 ### BUG-### — <short title>
 **Date:** YYYY-MM-DD
 **Status:** Open | In progress | Resolved
