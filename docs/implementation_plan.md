@@ -64,28 +64,28 @@ Build order matters here because later steps assume earlier ones exist:
 5. **Storybook init** last, pointed at `apps/web/components/ui` (empty at this point — that's expected and fine per the objective above).
 
 **Build checklist:**
-- [ ] Confirm the directory restructure (ADR-0050) is in place: `CLAUDE.md` at root (uppercase), `README.md` at root, all planning docs under `docs/`, `.claude/rules/` and `.claude/skills/phase-check/` present — fix anything left at a stale flat path
+- [x] Confirm the directory restructure (ADR-0050) is in place: `CLAUDE.md` at root (uppercase), `README.md` at root, all planning docs under `docs/`, `.claude/rules/` and `.claude/skills/phase-check/` present — verified via a live directory scan of Istiyak's machine
 - [x] `git init`, GitHub remote connected, initial commit (documentation set) pushed to `main` — done ahead of the rest of Phase 0, see ADR-0054 and `docs/runbooks/git-basics.md`
 - [x] `.gitignore` (node_modules, `brainy.db`, `.env`, `packages/tokens/build/`, Storybook build output, `.claude/settings.local.json` if not already globally excluded) — written pre-Phase-0 alongside the GitHub connection, so the first commit was already clean
-- [ ] Create a `phase-0-scaffolding` branch off `main` before writing any app code (ADR-0054) — the actual monorepo/backend/frontend scaffolding below happens on this branch, not on `main`
+- [x] Create a `phase-0-scaffolding` branch off `main` before writing any app code (ADR-0054) — confirmed via `git status`/`git branch` screenshot, clean working tree on `phase-0-scaffolding`
 - [x] `gitleaks` installed, `.gitleaks.toml` config, git pre-commit hook wired and tested — done ahead of the rest of Phase 0, alongside the GitHub connection (ADR-0054): confirmed it blocks a real-looking secret (caught a fake Stripe key via the `stripe-access-token` rule) and allows a clean commit through
-- [ ] Phase 0 closed out via the `/phase-check` → GitHub Pull Request → merge-to-`main` → delete-branch flow (`docs/runbooks/git-basics.md`), not a direct commit to `main`
-- [ ] `tools/scripts/backup-db.mjs` (or equivalent) written — copies `brainy.db` to a backup location; wired as `npm run backup-db`; matches the steps in `docs/runbooks/restore-from-backup.md`
-- [ ] `.claude/settings.json` populated with real permission entries once npm scripts exist (e.g. allow `Bash(npm run dev)`, `Bash(npm run build)`, `Bash(npm run lint)` without prompting) — committed so these apply for any future session, not just this one
-- [ ] Root workspace config (npm/pnpm workspaces) — `apps/*`, `packages/*`
-- [ ] `packages/tokens` — folder scaffold: `tokens/primitives.json`, `tokens/semantic.json` (placeholder values), `style-dictionary.config.js`
-- [ ] Style Dictionary build script runs successfully and outputs Tailwind config + CSS variables to `packages/tokens/build/`
-- [ ] `apps/server` — Fastify app initialized, runs on `localhost:4000`, responds to a health-check route
-- [ ] SQLite file created (`brainy.db`, gitignored) + Drizzle configured in `apps/server`
-- [ ] Initial Drizzle migration: `users`, `boards`, `folders`, `nodes`, `edges`, `chat_messages`, `provider_credentials`, `extraction_cache`, `brand_profile` tables created per `architecture.md` §5.3
-- [ ] `apps/web` — Next.js app initialized (app router), builds and runs on `localhost:3000`
-- [ ] `apps/web` Tailwind config wired to consume the generated token output
-- [ ] Lint rule in place blocking hardcoded color/spacing values (even with zero components yet, confirm the rule itself runs in a lint pass)
-- [ ] Storybook initialized in the repo (zero stories yet — confirmed it runs)
-- [ ] `npm run dev` (or equivalent root script) starts both `apps/web` and `apps/server` together
-- [ ] Production build passes clean: `apps/web` builds (`next build`), TypeScript compiles with no errors, lint passes — not just the dev server (ADR-0049)
-- [ ] Clean-install check: clone into a genuinely fresh folder, install, build, and run using only the README's instructions — fix anything that isn't actually automatic (ADR-0049)
-- [ ] **Phase 0 "done looks like" verified**
+- [x] Phase 0 closed out via the `/phase-check` → GitHub Pull Request → merge-to-`main` → delete-branch flow (`docs/runbooks/git-basics.md`), not a direct commit to `main` — confirmed: PR #1 (`phase-0-scaffolding` → `main`) created and merged on GitHub
+- [x] `tools/scripts/backup-db.mjs` written — copies `brainy.db` to a timestamped file in `backups/`; wired as `npm run backup-db`; tested against a real `brainy.db` (produced a working backup file)
+- [x] `.claude/settings.json` populated with a narrow permission allowlist (`npm install`, `npm run dev`/`build`/`lint` and per-workspace variants, `db:generate`, `db:migrate`, `backup-db`, `storybook`, `build-storybook`) — reviewed in full and delivered to the repo root
+- [x] Root workspace config (npm workspaces) — `apps/*`, `packages/*`, confirmed via root `package.json`
+- [x] `packages/tokens` — DTCG `primitives.json`/`semantic.json`, Style Dictionary config present
+- [x] Style Dictionary build script runs successfully and outputs Tailwind config + CSS variables to `packages/tokens/build/` — ran as the first step of `npm run dev` without error
+- [x] `apps/server` — Fastify app initialized, runs on `localhost:4000` with a `/health` route — confirmed via `npm run dev` screenshot (server up)
+- [x] SQLite file created (`brainy.db`, gitignored) + Drizzle configured in `apps/server`
+- [x] Initial Drizzle migration: `users`, `boards`, `folders`, `nodes`, `edges`, `chat_messages`, `provider_credentials`, `extraction_cache`, `brand_profile` tables created per `architecture.md` §5.3 — schema reviewed in full, matches
+- [x] `apps/web` — Next.js app initialized (app router), builds and runs on `localhost:3000` — confirmed via browser screenshot (only a harmless dev-only hydration warning from a browser extension, not a real bug)
+- [x] `apps/web` Tailwind config wired to consume the generated token output
+- [~] Lint rule in place blocking hardcoded color/spacing values — rule is present in the scaffold but not yet independently confirmed running a real violation and failing; re-check during Phase 1's first real component
+- [~] Storybook initialized in the repo (zero stories yet) — config present; `npm run storybook` itself not yet run and watched succeed
+- [x] `npm run dev` (or equivalent root script) starts both `apps/web` and `apps/server` together — confirmed via screenshot
+- [ ] Production build passes clean: `apps/web` builds (`next build`), TypeScript compiles with no errors, lint passes — not just the dev server (ADR-0049) — **only `npm run dev` has been run so far; `npm run build` has not**
+- [ ] Clean-install check: clone into a genuinely fresh folder, install, build, and run using only the README's instructions — fix anything that isn't actually automatic (ADR-0049) — **not yet run**
+- [ ] **Phase 0 "done looks like" verified** — holding this open until the two checks above actually run; everything else is genuinely done
 
 **Depends on:** nothing (first phase). **Nothing later in this phase depends on anything from Phase 1+.**
 **Verify with:** manual smoke test (no `testing.md` entries yet — nothing user-facing exists).
