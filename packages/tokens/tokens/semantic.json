@@ -1,0 +1,33 @@
+{
+  "color": {
+    "background": {
+      "page":      { "$value": "{color.white}",   "$type": "color" },
+      "surface":   { "$value": "{color.gray.50}",  "$type": "color" },
+      "surfaceRaised": { "$value": "{color.white}", "$type": "color" },
+      "muted":     { "$value": "{color.gray.100}", "$type": "color" },
+      "accent":    { "$value": "{color.accent.600}", "$type": "color" },
+      "accentMuted": { "$value": "{color.accent.50}", "$type": "color" },
+      "danger":    { "$value": "{color.danger.600}", "$type": "color" }
+    },
+    "text": {
+      "primary":   { "$value": "{color.gray.900}", "$type": "color" },
+      "secondary": { "$value": "{color.gray.600}", "$type": "color" },
+      "muted":     { "$value": "{color.gray.400}", "$type": "color" },
+      "onAccent":  { "$value": "{color.white}",    "$type": "color" },
+      "accent":    { "$value": "{color.accent.600}", "$type": "color" },
+      "danger":    { "$value": "{color.danger.600}", "$type": "color" },
+      "success":   { "$value": "{color.success.600}", "$type": "color" }
+    },
+    "border": {
+      "default": { "$value": "{color.gray.200}",   "$type": "color" },
+      "muted":   { "$value": "{color.gray.100}",   "$type": "color" },
+      "focus":   { "$value": "{color.accent.500}", "$type": "color" },
+      "danger":  { "$value": "{color.danger.500}", "$type": "color" }
+    }
+  },
+  "font": {
+    "family": {
+      "default": { "$value": "{font.family.sans}", "$type": "fontFamily" }
+    }
+  }
+}

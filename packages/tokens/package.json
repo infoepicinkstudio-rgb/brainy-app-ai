@@ -1,0 +1,13 @@
+{
+  "name": "@brainy/tokens",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Design tokens (DTCG) + Style Dictionary build — the only source of color/spacing/typography values for Brainy. See architecture.md §7.",
+  "type": "module",
+  "scripts": {
+    "build": "style-dictionary build --config style-dictionary.config.js"
+  },
+  "devDependencies": {
+    "style-dictionary": "^5.7.1"
+  }
+}

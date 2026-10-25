@@ -460,8 +460,45 @@ Both get their own Task Flows (`TF-12`, `TF-13` in `prd.md` §4) and ship in Pha
 
 ---
 
+## 12. Phase 0 scaffolding — implementation choices
+
+Phase 0 was built and verified for real (clean `npm install`, production build, dev-boot, Storybook build, and a simulated clean-install from a fresh folder all passed). A handful of library/value choices weren't pinned down anywhere in the docs and had to be made while actually building — logged here rather than left silent, per `agents.md` §2.
+
+### ADR-0055 — SQLite driver: `@libsql/client`, not `better-sqlite3`
+**Decision:** The Drizzle/SQLite layer (architecture.md §5.1) uses `@libsql/client` + `drizzle-orm/libsql`, not `better-sqlite3`.
+**Rationale:** `better-sqlite3` needs a native addon compiled via `node-gyp` at install time — this failed outright in the sandbox used to build and verify Phase 0 (no C++ toolchain / restricted network for the fallback source download), and the same failure mode is a real risk on a no-coder's own Windows machine, which won't have Visual Studio Build Tools installed by default. `@libsql/client` ships prebuilt per-platform binaries through npm itself, so `npm install` just works with no extra toolchain. Functionally equivalent for this project's needs (single local file, synchronous-feeling API, full Drizzle support).
+**Status:** Decided.
+**Touches:** `apps/server/package.json`, `apps/server/src/db/client.ts`, `apps/server/src/db/migrate.ts`, `apps/server/drizzle.config.ts`.
+
+### ADR-0056 — Inter self-hosted via `@fontsource/inter`, not `next/font/google`
+**Decision:** Inter (ADR-0025) is loaded via the `@fontsource/inter` package (actual font files shipped through npm), imported in `apps/web/app/globals.css`, rather than `next/font/google`'s live fetch from `fonts.googleapis.com` at build time.
+**Rationale:** `next/font/google` failed the production build outright in the sandbox network used to build Phase 0 (couldn't reach Google's font CDN at build time). Even setting aside that specific environment, a build that depends on reaching an external service at build time is a fragile default for a tool whose whole premise is running reliably on a single person's machine — self-hosting removes that dependency entirely, with no real downside (same font, same weights).
+**Status:** Decided.
+**Touches:** `apps/web/app/layout.tsx`, `apps/web/app/globals.css`, `apps/web/package.json`.
+
+### ADR-0057 — Accent color: `#4f46e5` (indigo-600), resolving the open item from ADR-0028
+**Decision:** The token palette's one accent color (architecture.md §7, ADR-0028's "neutral grays + one accent") is a clean indigo (`primitives.json` `color.accent` scale, 50–900, base `#4f46e5`), used for primary actions, focus rings, and accent text/background tokens. Full neutral gray scale alongside it, both defined in `packages/tokens/tokens/primitives.json`.
+**Rationale:** This was an explicitly flagged open item ("to be proposed when tokens are drafted") — now that tokens were actually drafted for Phase 0, resolving it rather than leaving a placeholder. Indigo reads as calm/professional/research-tool-appropriate, is visually distinct from any color associated with EPICINK Studio's own brand (ADR-0009), and is a well-understood, accessible choice at the chosen shade (passes standard contrast checks against both white and the near-black text token). Not precious about this — easy to swap later since every component consumes it only via the `color.accent.*` token, never a hardcoded hex.
+**Status:** Decided. Removes "Accent color" from the open-items list below.
+**Touches:** `packages/tokens/tokens/primitives.json`, `packages/tokens/tokens/semantic.json`.
+
+### ADR-0058 — `concurrently` to run `apps/web` and `apps/server` together under one `npm run dev`
+**Decision:** The root `npm run dev` script uses `concurrently` to run the tokens build, `apps/server`'s dev process, and `apps/web`'s dev process together, labeled and color-coded per process.
+**Rationale:** Not decided anywhere previously; a plain, unopinionated choice — `concurrently` is the standard, minimal tool for this exact job (vs. a heavier task runner like Turborepo/Nx, which would be over-engineering for a two-process solo project per ADR-0007). Verified working: `npm run dev` from the repo root boots both processes and the tokens build together, matching Phase 0's literal "done looks like" criterion (`prd.md` §6).
+**Status:** Decided.
+**Touches:** root `package.json`.
+
+### ADR-0059 — Misc Phase 0 naming/tooling notes
+**Decision, bundled (each too small for its own ADR):**
+- **React Flow ships as `@xyflow/react`**, not the older `reactflow` package name — React Flow was rebranded/moved to this scoped package for v12+; `architecture.md` and `prd.md` referred to it generically as "React Flow," which this package is.
+- **Hardcoded-value lint enforcement** (ADR-0024, ADR-0031's "lint rule blocks hardcoded color/spacing values") is implemented via `eslint-plugin-tailwindcss`'s `no-arbitrary-value` rule in `apps/web/eslint.config.mjs`, rather than a hand-written custom rule — it directly targets the actual risk (an arbitrary Tailwind value like `bg-[#fff]` bypassing the token system) with a maintained, off-the-shelf rule instead of reinventing one.
+- **`apps/web/AGENTS.md` is not a naming collision with ADR-0050's root-`AGENTS.md` concern.** Next.js itself auto-generates this file (regenerated by `next dev`, meant to be committed) to warn an AI coding assistant about breaking changes in this Next.js major version. It's scoped to `apps/web/`, not the repo root, and serves a different, narrower purpose than `docs/agents.md` (this repo's own working conventions) — both are kept.
+**Status:** Decided.
+**Touches:** `apps/web/package.json`, `apps/web/eslint.config.mjs`.
+
+---
+
 ## Open items (not yet decided — tracked so they aren't lost)
 
 - **ADR-0034** — dedicated security discussion (subprocess input sanitization, localhost-only binding, public-repo data hygiene) — still owed.
-- **Accent color** — exact value for the neutral light-mode palette (ADR-0028) — to be proposed when tokens are drafted.
 - **Typography System PDF** (`Epicink-Studio-Typography-System.pdf` in the EPICINK knowledge base) — returned no extractable text on read; low priority now that Inter is confirmed (ADR-0029) and EPICINK assets are explicitly not being reused (ADR-0009), but flagged in case it's ever needed for reference.
