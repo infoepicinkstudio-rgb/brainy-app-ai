@@ -6,7 +6,10 @@ import { cn } from "@/lib/utils";
 // the exact transitioned properties (never transition-all, per the same rule) needs
 // bracket syntax here — that's a CSS property list, not a design-token value, so it's
 // outside what the token-enforcement lint rule (ADR-0024/ADR-0031) is actually for.
-const buttonVariants = cva(
+// Exported so a non-<button> element that needs button styling (e.g. not-found.tsx's
+// <Link> acting as a button) can reuse the exact same variants instead of duplicating
+// these classes.
+export const buttonVariants = cva(
   "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium " +
     "transition-[background-color,color,scale] duration-150 ease-out " +
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus focus-visible:ring-offset-2 " +
