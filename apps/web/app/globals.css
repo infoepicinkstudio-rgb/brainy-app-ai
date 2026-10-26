@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 /* Inter, self-hosted (ADR-0025, ADR-0056) — @fontsource ships the actual font files, so
    this never depends on reaching Google's servers at build or run time, unlike
@@ -37,11 +38,25 @@
   --color-border-muted: var(--color-border-muted);
   --color-border-focus: var(--color-border-focus);
   --color-border-danger: var(--color-border-danger);
+  --color-border-success: var(--color-border-success);
 
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
   --radius-full: var(--radius-full);
+
+  /* Elevation — layered shadows, not a single flat drop-shadow (better-ui). */
+  --shadow-surface: var(--shadow-surface);
+  --shadow-surface-raised: var(--shadow-surface-raised);
+  --shadow-overlay: var(--shadow-overlay);
+  --shadow-accent-focus: var(--shadow-accent-focus);
+  --shadow-nav: var(--shadow-nav);
+
+  /* Motion — named durations/easings (better-ui's exact values), not per-component magic numbers. */
+  --duration-fast: var(--motion-duration-fast);
+  --duration-slow: var(--motion-duration-slow);
+  --ease-standard: var(--motion-easing-standard);
+  --ease-out-token: var(--motion-easing-out);
 
   --font-sans: var(--font-family-default);
 }
@@ -52,4 +67,19 @@ body {
   background: var(--color-background-page);
   color: var(--color-text-primary);
   font-family: var(--font-sans);
+}
+
+/* No browser's UA stylesheet gives <button> a pointer cursor by default — only
+   <a href> gets that natively. (Verified directly: tailwindcss 4.3.3's own preflight
+   has no cursor rule at all; this is plain CSS-spec behavior, not a Tailwind reset.)
+   Every hand-rolled button across the app was silently relying on a cursor that
+   never comes for free, so this lives once here — globally, for every current and
+   future <button> — instead of being repeated (or forgotten) on each new button
+   component as later phases add more of them. */
+button:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
 }

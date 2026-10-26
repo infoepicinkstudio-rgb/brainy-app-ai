@@ -3,6 +3,9 @@
 
 import Fastify from "fastify";
 import cors from "@fastify/cors";
+import { profileRoutes } from "./routes/profile.js";
+import { providerCredentialsRoutes } from "./routes/provider-credentials.js";
+import { brandProfileRoutes } from "./routes/brand-profile.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "http://localhost:3000";
@@ -19,6 +22,11 @@ await app.register(cors, {
 app.get("/health", async () => {
   return { status: "ok", service: "brainy-server", time: new Date().toISOString() };
 });
+
+// Phase 1 — App Shell routes (architecture.md §4.1, ADR-0061).
+await app.register(profileRoutes);
+await app.register(providerCredentialsRoutes);
+await app.register(brandProfileRoutes);
 
 try {
   await app.listen({ port: PORT, host: "localhost" });

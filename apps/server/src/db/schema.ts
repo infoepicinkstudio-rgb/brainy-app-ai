@@ -99,12 +99,18 @@ export const chat_messages = sqliteTable("chat_messages", {
   ...timestamps,
 });
 
-/** API keys per provider. api_key is encrypted at rest — see architecture.md §6. */
+/**
+ * API keys per provider — one row per provider, created lazily the first time Settings
+ * touches it (ADR-0061). `api_key` is encrypted at rest (AES-256-GCM, ADR-0060, see
+ * architecture.md §6) and null until the user saves a key; `execution_mode` is settable
+ * independently of whether a key exists (Local LLM mode never needs one).
+ */
 export const provider_credentials = sqliteTable("provider_credentials", {
   id: id(),
-  provider: text("provider").notNull(), // "claude" | "openai" | "gemini"
-  api_key: text("api_key").notNull(),
+  provider: text("provider").notNull().unique(), // "claude" | "openai" | "gemini"
+  api_key: text("api_key"), // encrypted ciphertext; null = not configured
   is_enabled: integer("is_enabled", { mode: "boolean" }).notNull().default(true),
+  execution_mode: text("execution_mode").notNull().default("native"), // "local" | "native" | "manual" — ADR-0061
   ...timestamps,
 });
 

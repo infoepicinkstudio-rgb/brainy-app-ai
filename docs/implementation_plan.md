@@ -64,28 +64,28 @@ Build order matters here because later steps assume earlier ones exist:
 5. **Storybook init** last, pointed at `apps/web/components/ui` (empty at this point — that's expected and fine per the objective above).
 
 **Build checklist:**
-- [ ] Confirm the directory restructure (ADR-0050) is in place: `CLAUDE.md` at root (uppercase), `README.md` at root, all planning docs under `docs/`, `.claude/rules/` and `.claude/skills/phase-check/` present — fix anything left at a stale flat path
+- [x] Confirm the directory restructure (ADR-0050) is in place: `CLAUDE.md` at root (uppercase), `README.md` at root, all planning docs under `docs/`, `.claude/rules/` and `.claude/skills/phase-check/` present — verified via a live directory scan of Istiyak's machine
 - [x] `git init`, GitHub remote connected, initial commit (documentation set) pushed to `main` — done ahead of the rest of Phase 0, see ADR-0054 and `docs/runbooks/git-basics.md`
 - [x] `.gitignore` (node_modules, `brainy.db`, `.env`, `packages/tokens/build/`, Storybook build output, `.claude/settings.local.json` if not already globally excluded) — written pre-Phase-0 alongside the GitHub connection, so the first commit was already clean
-- [ ] Create a `phase-0-scaffolding` branch off `main` before writing any app code (ADR-0054) — the actual monorepo/backend/frontend scaffolding below happens on this branch, not on `main`
+- [x] Create a `phase-0-scaffolding` branch off `main` before writing any app code (ADR-0054) — confirmed via `git status`/`git branch` screenshot, clean working tree on `phase-0-scaffolding`
 - [x] `gitleaks` installed, `.gitleaks.toml` config, git pre-commit hook wired and tested — done ahead of the rest of Phase 0, alongside the GitHub connection (ADR-0054): confirmed it blocks a real-looking secret (caught a fake Stripe key via the `stripe-access-token` rule) and allows a clean commit through
-- [ ] Phase 0 closed out via the `/phase-check` → GitHub Pull Request → merge-to-`main` → delete-branch flow (`docs/runbooks/git-basics.md`), not a direct commit to `main`
-- [ ] `tools/scripts/backup-db.mjs` (or equivalent) written — copies `brainy.db` to a backup location; wired as `npm run backup-db`; matches the steps in `docs/runbooks/restore-from-backup.md`
-- [ ] `.claude/settings.json` populated with real permission entries once npm scripts exist (e.g. allow `Bash(npm run dev)`, `Bash(npm run build)`, `Bash(npm run lint)` without prompting) — committed so these apply for any future session, not just this one
-- [ ] Root workspace config (npm/pnpm workspaces) — `apps/*`, `packages/*`
-- [ ] `packages/tokens` — folder scaffold: `tokens/primitives.json`, `tokens/semantic.json` (placeholder values), `style-dictionary.config.js`
-- [ ] Style Dictionary build script runs successfully and outputs Tailwind config + CSS variables to `packages/tokens/build/`
-- [ ] `apps/server` — Fastify app initialized, runs on `localhost:4000`, responds to a health-check route
-- [ ] SQLite file created (`brainy.db`, gitignored) + Drizzle configured in `apps/server`
-- [ ] Initial Drizzle migration: `users`, `boards`, `folders`, `nodes`, `edges`, `chat_messages`, `provider_credentials`, `extraction_cache`, `brand_profile` tables created per `architecture.md` §5.3
-- [ ] `apps/web` — Next.js app initialized (app router), builds and runs on `localhost:3000`
-- [ ] `apps/web` Tailwind config wired to consume the generated token output
-- [ ] Lint rule in place blocking hardcoded color/spacing values (even with zero components yet, confirm the rule itself runs in a lint pass)
-- [ ] Storybook initialized in the repo (zero stories yet — confirmed it runs)
-- [ ] `npm run dev` (or equivalent root script) starts both `apps/web` and `apps/server` together
-- [ ] Production build passes clean: `apps/web` builds (`next build`), TypeScript compiles with no errors, lint passes — not just the dev server (ADR-0049)
-- [ ] Clean-install check: clone into a genuinely fresh folder, install, build, and run using only the README's instructions — fix anything that isn't actually automatic (ADR-0049)
-- [ ] **Phase 0 "done looks like" verified**
+- [x] Phase 0 closed out via the `/phase-check` → GitHub Pull Request → merge-to-`main` → delete-branch flow (`docs/runbooks/git-basics.md`), not a direct commit to `main` — confirmed: PR #1 (`phase-0-scaffolding` → `main`) created and merged on GitHub
+- [x] `tools/scripts/backup-db.mjs` written — copies `brainy.db` to a timestamped file in `backups/`; wired as `npm run backup-db`; tested against a real `brainy.db` (produced a working backup file)
+- [x] `.claude/settings.json` populated with a narrow permission allowlist (`npm install`, `npm run dev`/`build`/`lint` and per-workspace variants, `db:generate`, `db:migrate`, `backup-db`, `storybook`, `build-storybook`) — reviewed in full and delivered to the repo root
+- [x] Root workspace config (npm workspaces) — `apps/*`, `packages/*`, confirmed via root `package.json`
+- [x] `packages/tokens` — DTCG `primitives.json`/`semantic.json`, Style Dictionary config present
+- [x] Style Dictionary build script runs successfully and outputs Tailwind config + CSS variables to `packages/tokens/build/` — ran as the first step of `npm run dev` without error
+- [x] `apps/server` — Fastify app initialized, runs on `localhost:4000` with a `/health` route — confirmed via `npm run dev` screenshot (server up)
+- [x] SQLite file created (`brainy.db`, gitignored) + Drizzle configured in `apps/server`
+- [x] Initial Drizzle migration: `users`, `boards`, `folders`, `nodes`, `edges`, `chat_messages`, `provider_credentials`, `extraction_cache`, `brand_profile` tables created per `architecture.md` §5.3 — schema reviewed in full, matches
+- [x] `apps/web` — Next.js app initialized (app router), builds and runs on `localhost:3000` — confirmed via browser screenshot (only a harmless dev-only hydration warning from a browser extension, not a real bug)
+- [x] `apps/web` Tailwind config wired to consume the generated token output
+- [~] Lint rule in place blocking hardcoded color/spacing values — rule is present in the scaffold but not yet independently confirmed running a real violation and failing; re-check during Phase 1's first real component
+- [~] Storybook initialized in the repo (zero stories yet) — config present; `npm run storybook` itself not yet run and watched succeed
+- [x] `npm run dev` (or equivalent root script) starts both `apps/web` and `apps/server` together — confirmed via screenshot
+- [ ] Production build passes clean: `apps/web` builds (`next build`), TypeScript compiles with no errors, lint passes — not just the dev server (ADR-0049) — **only `npm run dev` has been run so far; `npm run build` has not**
+- [ ] Clean-install check: clone into a genuinely fresh folder, install, build, and run using only the README's instructions — fix anything that isn't actually automatic (ADR-0049) — **not yet run**
+- [ ] **Phase 0 "done looks like" verified** — holding this open until the two checks above actually run; everything else is genuinely done
 
 **Depends on:** nothing (first phase). **Nothing later in this phase depends on anything from Phase 1+.**
 **Verify with:** manual smoke test (no `testing.md` entries yet — nothing user-facing exists).
@@ -107,30 +107,32 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 
 **Build checklist:**
 
+> **Verification note (2026-10-26):** built and verified from a headless environment with no browser available. `[x]` below means the real backend was exercised directly (HTTP calls, raw-DB inspection, isolated crypto scripts) and/or the exact frontend code path was confirmed to consume the exact field verified correct server-side — not that a human has watched it render. See `testing.md` Phase 1 section for the full case-by-case breakdown, including a couple of genuine gaps left honestly open rather than checked off.
+
 *TF-01 — First-run / cosmetic login*
-- [ ] Login screen UI: name input + submit
-- [ ] Avatar-from-initials generator util (pure function, unit-checkable)
-- [ ] On submit: write profile row to `users` table
-- [ ] On app load: check `users` table — if a profile exists, skip login and go straight to Boards List
-- [ ] Profile (name + avatar) renders correctly after a restart
+- [x] Login screen UI: name input + submit
+- [x] Avatar-from-initials generator util (pure function, unit-checkable) — directly exercised, 6/6 cases pass (1-word, multi-word, extra whitespace, empty, single-char)
+- [x] On submit: write profile row to `users` table — verified via `POST /api/profile`
+- [x] On app load: check `users` table — if a profile exists, skip login and go straight to Boards List — verified via `GET /api/profile` + `AppGate` redirect logic
+- [~] Profile (name + avatar) renders correctly after a restart — the data persists and reloads correctly (verified); actual on-screen rendering not visually confirmed, no browser available here
 
 *Navbar*
-- [ ] Persistent navbar component (mounted at root layout, present on every route by construction)
-- [ ] Avatar/profile dropdown: Settings link, keyboard-shortcuts reference, About/version info, cosmetic Sign Out
-- [ ] Sign Out (cosmetic) returns to login screen without deleting the stored profile
+- [x] Persistent navbar component (mounted at root layout, present on every route by construction)
+- [x] Avatar/profile dropdown: Settings link, keyboard-shortcuts reference, About/version info, cosmetic Sign Out
+- [x] Sign Out (cosmetic) returns to login screen without deleting the stored profile — verified by code: `signOut()` only flips `sessionActive`, never calls a delete endpoint
 
 *TF-11 — Settings*
-- [ ] Settings route/page shell
-- [ ] Provider API key fields for Claude / OpenAI / Gemini, each backed by a row in `provider_credentials`
-- [ ] Saving a key updates `is_enabled`/presence correctly; clearing a key reverts it
-- [ ] `isConfigured()` check (`architecture.md` §4.2) wired through to a placeholder tools-panel indicator (stub acceptable here — real tools panel UI arrives in Phase 4)
-- [ ] Default execution mode setting per provider (Local LLM / Native API / Manual Input) stored and retrievable
-- [ ] Brand/Voice Profile editor: create/edit/save content to `brand_profile` table
+- [x] Settings route/page shell
+- [x] Provider API key fields for Claude / OpenAI / Gemini, each backed by a row in `provider_credentials`
+- [x] Saving a key updates `is_enabled`/presence correctly; clearing a key reverts it — verified full lifecycle via direct HTTP calls (set → configured:true → clear → configured:false)
+- [x] `isConfigured()` check (`architecture.md` §4.2) wired through to a placeholder tools-panel indicator (stub acceptable here — real tools panel UI arrives in Phase 4)
+- [x] Default execution mode setting per provider (Local LLM / Native API / Manual Input) stored and retrievable — verified via `PUT`/`GET /api/providers/:provider`
+- [x] Brand/Voice Profile editor: create/edit/save content to `brand_profile` table — verified full save/reload cycle via direct HTTP calls
 
 *Misc App Shell*
-- [ ] Keyboard shortcuts reference modal (placeholder content acceptable — finalize once real shortcuts exist)
-- [ ] About/version info modal (shows app name "Brainy", version string)
-- [ ] **Phase 1 "done looks like" verified**
+- [x] Keyboard shortcuts reference modal (placeholder content acceptable — finalize once real shortcuts exist)
+- [x] About/version info modal (shows app name "Brainy.ai", version string) — *(corrected from this checklist's own earlier "Brainy" to "Brainy.ai" — ADR-0062)*
+- [~] **Phase 1 "done looks like" verified** — backend and logic genuinely verified by direct exercise (see `testing.md`); two real gaps found and either fixed (BUG-002: app-load gate hung forever with no backend-unreachable message — fixed) or honestly left open (per-provider key-format validation — not built, noted in `testing.md` F-11). Full visual/interactive confirmation in a real browser is still owed — left for Istiyak to do once, see `testing.md`'s open `[ ]` items.
 
 **Depends on:** Phase 0 (DB, both processes running). **Chosen to come before canvas work specifically so Phase 4 never needs a workaround for credential storage (ADR-0041).**
 **Verify with:** `testing.md` Phase 1 section.
@@ -145,7 +147,7 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 1. **`boards`/`folders` CRUD routes** in `apps/server` first — Boards List is just a thin UI over these.
 2. **Boards List screen**, built against those routes, including the Trash view (soft-delete via `deleted_at` — no new table, just a filtered query).
 3. **Board Zustand store** — this is the high-frequency store (ADR-0012); design its update shape before writing canvas UI against it, since retrofitting a store's shape after components depend on it is expensive.
-4. **React Flow canvas mount** at `/brainboard/[id]`, initially with pan/zoom/select only — no node types yet.
+4. **React Flow canvas mount** at `/brainboards/[id]`, initially with pan/zoom/select only — no node types yet. Background: a subtle dot-grid pattern (small, evenly-spaced dots — not a blank page, not a line grid), the look Istiyak pointed to in Poppy.ai's canvas. Define it as new primitive tokens (dot size, spacing, color — likely a faint tint of `color.gray`) rather than a hardcoded value, consistent with the token-first rule (ADR-0024/ADR-0031); React Flow's own `<Background variant="dots">` is the natural fit for this, styled from those tokens.
 5. **Text node component**, the first real node type, built against the board store from step 3.
 6. **Autosave**: a debounced effect in the board store that writes node/edge changes back via a `nodes`/`edges` PATCH route — implement this *after* text nodes exist, so there's something real to autosave, rather than building the autosave mechanism against nothing.
 7. **File/document node and link/reference node components** (F-26, F-27 — ADR-0053), built right after text nodes since they're the same complexity class (static content, no AI/extraction wiring yet — that lands in Phase 4). File node upload handling and actual text/data extraction are two separate steps: get the node rendering with a stored file reference first, add the Node-native PDF/DOCX/XLSX parsing (into `extraction_cache`, keyed by content hash) as a following step — don't block the node's existence on extraction working yet.
@@ -163,7 +165,8 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 - [ ] Permanent delete from Trash (hard delete row + cascade its nodes/edges/messages)
 
 *TF-03 — Canvas navigation*
-- [ ] React Flow canvas mounted at `/brainboard/[id]`
+- [ ] React Flow canvas mounted at `/brainboards/[id]`
+- [ ] Canvas background renders a subtle dot-grid (small dots, token-driven spacing/color) — not a blank page; reference: Poppy.ai's canvas
 - [ ] Pan/zoom works smoothly
 - [ ] Single-node selection
 - [ ] Multi-node selection (marquee or shift-click)

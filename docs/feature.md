@@ -44,7 +44,7 @@
 **User flows (Level 2):**
 - **Happy path — create:** Click "New board" → a `boards` row is created immediately (no blank "untitled" limbo state waiting on a modal) → navigates straight into the new, empty canvas.
 - **Rename:** Inline rename on the board card/list row → writes to `boards.title` → reflected immediately in the navbar when that board is open.
-- **Open:** Click a board card → navigates to `/brainboard/[id]` and loads its nodes/edges.
+- **Open:** Click a board card → navigates to `/brainboards/[id]` and loads its nodes/edges.
 - **Empty state:** Zero boards exist yet → Boards List shows an empty-state prompt rather than a blank grid.
 
 **References:** `architecture.md` §5.3 (`boards` table) · ADR-0020, ADR-0021

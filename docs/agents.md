@@ -39,7 +39,7 @@ For a single focused work session (e.g. "today, build the text-node component"),
 These are settled in `rules-decisions.md` — linking here as a checklist, not restating the rationale:
 - DB: `snake_case`, plural tables, no `tbl` prefix, `<singular>_id` foreign keys, UUID primary keys, `created_at`/`updated_at` (+`deleted_at` on `boards`), `is_`/`has_` booleans. (ADR-0020, ADR-0021)
 - Frontend: tokens → shadcn/ui primitives → composed components → screens, nothing hardcoded. (ADR-0024)
-- Routes: `/brainboard/all`, `/brainboard/[id]`; base URL from env config, never hardcoded. (ADR-0023)
+- Routes: `/brainboards/all`, `/brainboards/[id]` — plural, matching the `boards` table name. base URL from env config, never hardcoded. (ADR-0023, ADR-0063)
 - Git branches: `phase-<n>-<slug>` or `feature/<slug>`, lowercase, hyphenated, merged to `main` via Pull Request. (ADR-0054, `docs/runbooks/git-basics.md`)
 
 ## 6. Not yet decided — ask before assuming
