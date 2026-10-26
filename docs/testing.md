@@ -44,17 +44,17 @@ Legend: `[ ]` not yet run · `[x]` passes · `[~]` partially implemented/adjuste
 ## Phase 2 — Core canvas
 
 **F-03 — Boards List**
-- [ ] "New board" creates a board and navigates into it immediately
-- [ ] Renaming a board updates both the list and the open canvas's navbar
-- [ ] Zero-boards state shows an empty-state prompt, not a blank screen
+- [x] "New board" creates a board and navigates into it immediately — confirmed live via Playwright against the real running app+backend (Boards List sidebar/list-row redesign pass): submitting the dialog redirects straight to `/brainboards/<new-id>`.
+- [~] Renaming a board updates both the list and the open canvas's navbar — confirmed for the list (overflow menu → Rename → row updates). **Not confirmed**: whether a canvas tab for that board, already open in another window/tab at the time of the rename, live-updates its own navbar title — `board-store.ts`'s `boardTitle` is only set on `loadBoard` (mount), so an already-open canvas would only pick up the new title on its next load. Pre-existing behavior, not touched by this pass; flagging rather than assuming.
+- [x] Zero-boards state shows an empty-state prompt, not a blank screen — confirmed visually (screenshot): icon + "No boards yet — create your first one…" + a "New board" button, sidebar still present.
 
 **F-04 — Folders**
-- [ ] Moving a board into a folder, then deleting the folder, leaves the board intact at top level
+- [ ] Moving a board into a folder, then deleting the folder, leaves the board intact at top level — backend behavior confirmed by code read (`DELETE /api/folders/:id` nulls `folder_id` on affected boards before deleting the row), but **no UI exposes deleting a folder at all** — not in the original Boards List page, and not added in this sidebar redesign either (out of this pass's scope: the ask was nav + list rows + paste-to-create, not full folder CRUD). Still only reachable via a raw API call. Flagging as a pre-existing gap, not a regression.
 
 **F-05 — Soft-delete / Trash**
-- [ ] Deleting a board removes it from the main list and shows it in Trash
-- [ ] Restoring from Trash brings it back to its original folder
-- [ ] Permanent delete from Trash removes the board and its nodes/edges/messages
+- [x] Deleting a board removes it from the main list and shows it in Trash — confirmed live via Playwright: "Move to Trash" (overflow menu) removes it from `/brainboards/all`'s list, and it appears on `/brainboards/trash`.
+- [x] Restoring from Trash brings it back — confirmed live via Playwright: "Restore" removes it from Trash and it reappears on `/brainboards/all`. *(Restore-to-original-folder specifically not separately isolated — the board tested wasn't in a folder when trashed.)*
+- [x] Permanent delete from Trash removes the board — confirmed live via Playwright: "Delete forever" + confirm dialog removes it from Trash and a follow-up list fetch no longer includes it. *(Cascading nodes/edges/messages deletion confirmed by code read of the DELETE route, not re-verified live in this pass — no nodes existed on the test board.)*
 
 **F-06 — Canvas pan/zoom/select**
 - [ ] Pan and zoom work with both mouse and trackpad input

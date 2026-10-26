@@ -81,6 +81,44 @@ function CanvasShell({ boardId }: { boardId: string }) {
     [saveNodePosition]
   );
 
+  // Paste-URL-to-create-link-node (Istiyak: "paste a URL directly onto the canvas"
+  // currently does nothing — he has to add a link node first, then paste inside it).
+  // Listens on `document`, not a specific element, because paste events only fire on
+  // the currently focused element and there's nothing on the bare canvas to focus;
+  // guarded on `document.activeElement` so pasting into an actual input — a link
+  // node's own URL field, a node being edited, a dialog's text field — is completely
+  // untouched and keeps its native paste behavior.
+  React.useEffect(() => {
+    function handlePaste(event: ClipboardEvent) {
+      const active = document.activeElement;
+      const isEditingSomething =
+        active instanceof HTMLInputElement ||
+        active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLElement && active.isContentEditable);
+      if (isEditingSomething) return;
+
+      const text = event.clipboardData?.getData("text/plain")?.trim();
+      if (!text) return;
+
+      // New URL(text) is also the "is this a URL" check — a non-URL paste (plain
+      // text, an image, etc.) falls through and does nothing; the explicit ask was
+      // specifically about URLs, so a plain-text-node fallback is left out rather
+      // than guessed at.
+      let url: URL;
+      try {
+        url = new URL(text);
+      } catch {
+        return;
+      }
+
+      event.preventDefault();
+      addLinkNode(centerPosition(), { url: url.toString() });
+    }
+
+    document.addEventListener("paste", handlePaste);
+    return () => document.removeEventListener("paste", handlePaste);
+  }, [addLinkNode, centerPosition]);
+
   const handleFileChosen = React.useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];

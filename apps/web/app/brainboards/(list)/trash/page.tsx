@@ -1,12 +1,13 @@
 "use client";
 
 // Trash view (TF-02, testing.md F-05) — soft-deleted boards, with Restore and
-// permanent delete. A separate route rather than a toggle on the main Boards List so
-// the common case (browsing live boards) never has to filter deleted ones out.
+// permanent delete. Moved into the "(list)" route group so it shares the sidebar;
+// the URL (/brainboards/trash) is unchanged. The old "Back to boards" link is
+// removed here — the sidebar's "All Boards" nav item now does that same job, so
+// keeping both would just be two links to the same place.
 
 import * as React from "react";
-import Link from "next/link";
-import { ArrowLeft, RotateCcw, Trash2 } from "lucide-react";
+import { RotateCcw, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -79,14 +80,7 @@ export default function TrashPage() {
   return (
     <main className="flex flex-1 flex-col px-6 py-8">
       <div className="mx-auto w-full max-w-3xl">
-        <Link
-          href="/brainboards/all"
-          className="duration-fast inline-flex items-center gap-1.5 text-sm text-text-secondary transition-colors hover:text-text-primary"
-        >
-          <ArrowLeft className="size-3.5" aria-hidden="true" />
-          Back to boards
-        </Link>
-        <h1 className="mt-3 text-2xl font-semibold tracking-tight text-text-primary">Trash</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-text-primary">Trash</h1>
 
         {boards.length === 0 ? (
           <p className="mt-8 text-sm text-text-secondary">Trash is empty.</p>
