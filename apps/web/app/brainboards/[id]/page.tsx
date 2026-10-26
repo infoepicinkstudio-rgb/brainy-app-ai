@@ -2,24 +2,26 @@
 
 import * as React from "react";
 import { useParams } from "next/navigation";
-import Link from "next/link";
 import {
   ReactFlow,
   ReactFlowProvider,
   Background,
   BackgroundVariant,
   Controls,
+  ControlButton,
   useReactFlow,
   type Node,
   type NodeTypes,
   type OnNodeDrag,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { ArrowLeft, Type, Link2, FileUp } from "lucide-react";
+import { Type, Link2, FileUp, Undo2, Redo2, Plus, Minus, Maximize2 } from "lucide-react";
 import { useBoardStore } from "@/stores/board-store";
 import { TextNode } from "@/components/canvas/text-node";
 import { FileNode } from "@/components/canvas/file-node";
 import { LinkNode } from "@/components/canvas/link-node";
+import { VideoNode } from "@/components/canvas/video-node";
+import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { Button } from "@/components/ui/button";
 
 // TF-03 — React Flow canvas mount (implementation_plan.md Phase 2 step 4). The
@@ -29,7 +31,27 @@ const nodeTypes: NodeTypes = {
   text: TextNode,
   file: FileNode,
   link: LinkNode,
+  video: VideoNode,
 };
+
+// Node-card-overhaul pass (ADR-0065/ADR-0066): minZoom/maxZoom and fitView's own cap
+// are tuned against the SMALLER card footprint (node-chrome.tsx, w-56 not w-64) — fit
+// is capped at 100% so a board with only one or two small nodes doesn't zoom in past
+// their natural size, and padding gives real breathing room around the default view.
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 2;
+const FIT_VIEW_OPTIONS = { padding: 0.4, maxZoom: 1 };
+
+// BUG-011: React Flow's own stylesheet applies `fill: currentColor` to every
+// `.react-flow__controls-button svg` — tuned for its own solid-glyph icons (Plus/
+// Minus/FitView), which have no `fill` attribute of their own to conflict with. Lucide
+// icons are stroke-based (`fill="none" stroke="currentColor"`), so that blanket rule
+// was overriding `fill="none"` on every custom control button we added, rendering them
+// as solid filled blobs instead of clean line icons. A plain Tailwind className can't
+// win here — `.react-flow__controls-button svg` is a class+element compound selector,
+// more specific than a single utility class — so this uses an inline `style` (highest
+// specificity short of `!important`) instead, on every custom icon in this cluster.
+const CONTROL_ICON_STYLE: React.CSSProperties = { fill: "none" };
 
 export default function BoardCanvasPage() {
   // useParams() is only resolvable at request time, which next.config.ts's
@@ -54,15 +76,34 @@ function BoardCanvasRoute() {
 }
 
 function CanvasShell({ boardId }: { boardId: string }) {
-  const { nodes, edges, loaded, loadError, boardTitle, loadBoard, onNodesChange, saveNodePosition, addTextNode, addLinkNode, addFileNode } =
-    useBoardStore();
-  const { screenToFlowPosition } = useReactFlow();
+  const {
+    nodes,
+    edges,
+    loaded,
+    loadError,
+    loadBoard,
+    onNodesChange,
+    saveNodePosition,
+    addTextNode,
+    addLinkNode,
+    addFileNode,
+    addVideoNodeFromUrl,
+    undo,
+    redo,
+  } = useBoardStore();
+  const canUndo = useBoardStore((state) => state.past.length > 0);
+  const canRedo = useBoardStore((state) => state.future.length > 0);
+  const { screenToFlowPosition, zoomIn, zoomOut, fitView } = useReactFlow();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   // error-handling-conventions.md: data-mutating actions disable their control for the
   // duration of the in-flight request — a file upload (saves a file + creates a node)
   // qualifies, and without this a second click while one upload is still running could
   // kick off a concurrent second upload.
   const [isUploading, setIsUploading] = React.useState(false);
+  // Keyed by node id, populated on drag start and read on drag stop — lets a drag's
+  // undo entry record where the node actually came FROM, not just where it ended up
+  // (board-store.ts's `saveNodePosition`, ADR-0066).
+  const dragStartPositions = React.useRef<Map<string, { x: number; y: number }>>(new Map());
 
   React.useEffect(() => {
     loadBoard(boardId);
@@ -74,20 +115,74 @@ function CanvasShell({ boardId }: { boardId: string }) {
     return screenToFlowPosition(viewportCenter);
   }, [screenToFlowPosition]);
 
+  const handleNodeDragStart: OnNodeDrag<Node> = React.useCallback((_event, node) => {
+    dragStartPositions.current.set(node.id, { ...node.position });
+  }, []);
+
   const handleNodeDragStop: OnNodeDrag<Node> = React.useCallback(
     (_event, node) => {
-      saveNodePosition(node.id, node.position.x, node.position.y);
+      const from = dragStartPositions.current.get(node.id) ?? node.position;
+      dragStartPositions.current.delete(node.id);
+      saveNodePosition(node.id, from, { x: node.position.x, y: node.position.y });
     },
     [saveNodePosition]
   );
 
-  // Paste-URL-to-create-link-node (Istiyak: "paste a URL directly onto the canvas"
-  // currently does nothing — he has to add a link node first, then paste inside it).
-  // Listens on `document`, not a specific element, because paste events only fire on
-  // the currently focused element and there's nothing on the bare canvas to focus;
-  // guarded on `document.activeElement` so pasting into an actual input — a link
-  // node's own URL field, a node being edited, a dialog's text field — is completely
-  // untouched and keeps its native paste behavior.
+  // Undo/redo keyboard shortcuts (Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y — ADR-0066). Guarded
+  // on `document.activeElement` the same way the paste handler below is: while actually
+  // typing in a node's textarea/input, this leaves the browser's own native text-field
+  // undo alone instead of hijacking it for canvas-level undo.
+  React.useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const active = document.activeElement;
+      const isEditingSomething =
+        active instanceof HTMLInputElement ||
+        active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLElement && active.isContentEditable);
+      if (isEditingSomething) return;
+
+      const isMod = event.ctrlKey || event.metaKey;
+      if (!isMod) return;
+
+      if (event.key.toLowerCase() === "z" && event.shiftKey) {
+        event.preventDefault();
+        redo();
+      } else if (event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        undo();
+      } else if (event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        redo();
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [undo, redo]);
+
+  // Paste-to-create (Istiyak: "paste a URL directly onto the canvas" originally did
+  // nothing — he had to add a link node first, then paste inside it; round 2 widened
+  // this to ANY pasted content, not just URLs — "anything pasted on canvas should
+  // immediately adapt its visual preview according to the type"). Listens on
+  // `document`, not a specific element, because paste events only fire on the
+  // currently focused element and there's nothing on the bare canvas to focus; guarded
+  // on `document.activeElement` so pasting into an actual input — a link node's own URL
+  // field, a node being edited, a dialog's text field — is completely untouched and
+  // keeps its native paste behavior.
+  //
+  // Type-adaptive card on paste (ADR-0065/ADR-0069): a recognizable video URL (YouTube
+  // or Vimeo) creates a `video` node directly, in its final visual style from the first
+  // frame, instead of creating a generic link node that then has to convert itself a
+  // moment later; any other URL creates a `link` node (which kicks off its own
+  // lightweight title/favicon fetch, ADR-0067); plain text creates a filled `text` node.
+  //
+  // BUG-018 fix (round 6, Istiyak: "On dropping any file on canvas / or / copy pasting
+  // from desktop its node card not getting generated. Its directly getting towards
+  // browsers default open / save functionality"): an actual FILE on the clipboard (e.g.
+  // a file copied in the OS's file explorer, not a URL/text selection) was never checked
+  // for here at all — only `text/plain` was ever read, so a pasted file fell through
+  // every branch below and the browser's own default paste handling took over. Checked
+  // FIRST, before the text/plain branch, and routed through the exact same
+  // `addFileNode` upload path the toolbar's "File" button already uses.
   React.useEffect(() => {
     function handlePaste(event: ClipboardEvent) {
       const active = document.activeElement;
@@ -97,27 +192,92 @@ function CanvasShell({ boardId }: { boardId: string }) {
         (active instanceof HTMLElement && active.isContentEditable);
       if (isEditingSomething) return;
 
-      const text = event.clipboardData?.getData("text/plain")?.trim();
-      if (!text) return;
-
-      // New URL(text) is also the "is this a URL" check — a non-URL paste (plain
-      // text, an image, etc.) falls through and does nothing; the explicit ask was
-      // specifically about URLs, so a plain-text-node fallback is left out rather
-      // than guessed at.
-      let url: URL;
-      try {
-        url = new URL(text);
-      } catch {
+      const files = Array.from(event.clipboardData?.files ?? []);
+      if (files.length > 0) {
+        event.preventDefault();
+        const position = centerPosition();
+        setIsUploading(true);
+        (async () => {
+          try {
+            for (const file of files) {
+              await addFileNode(position, file);
+              position.x += 24;
+              position.y += 24;
+            }
+          } catch {
+            // Mirrors handleFileChosen's own silent-failure handling below — no toast
+            // system exists yet in this app (Phase 1 scope).
+          } finally {
+            setIsUploading(false);
+          }
+        })();
         return;
       }
 
+      const text = event.clipboardData?.getData("text/plain")?.trim();
+      if (!text) return;
+
       event.preventDefault();
-      addLinkNode(centerPosition(), { url: url.toString() });
+      const position = centerPosition();
+
+      // New URL(text) is also the "is this a URL" check.
+      let url: URL | null;
+      try {
+        url = new URL(text);
+      } catch {
+        url = null;
+      }
+
+      if (url) {
+        const urlString = url.toString();
+        addVideoNodeFromUrl(position, urlString).then((wasVideo) => {
+          if (!wasVideo) addLinkNode(position, { url: urlString });
+        });
+      } else {
+        addTextNode(position, text);
+      }
     }
 
     document.addEventListener("paste", handlePaste);
     return () => document.removeEventListener("paste", handlePaste);
-  }, [addLinkNode, centerPosition]);
+  }, [addFileNode, addLinkNode, addTextNode, addVideoNodeFromUrl, centerPosition]);
+
+  // BUG-018 fix, drag-and-drop half (round 6): the canvas had no `dragover`/`drop`
+  // handlers at all, so a file dragged onto it fell straight through to the BROWSER's
+  // own default handling (opening/saving the file), never reaching React at all. A
+  // `dragover` handler must call `preventDefault()` for the browser to even consider the
+  // subsequent `drop` a valid drop target in the first place — without it, `drop` never
+  // fires as a droppable-here event and the browser reverts to its native behavior
+  // regardless of what a `drop` handler alone might try to do.
+  const handleDragOver = React.useCallback((event: React.DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const handleDrop = React.useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+      const files = Array.from(event.dataTransfer.files ?? []);
+      if (files.length === 0) return;
+      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      setIsUploading(true);
+      (async () => {
+        try {
+          for (const file of files) {
+            await addFileNode(position, file);
+            position.x += 24;
+            position.y += 24;
+          }
+        } catch {
+          // See handleFileChosen's own comment below — same silent, non-crashing
+          // failure handling pending a real toast system.
+        } finally {
+          setIsUploading(false);
+        }
+      })();
+    },
+    [addFileNode, screenToFlowPosition]
+  );
 
   const handleFileChosen = React.useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -155,55 +315,105 @@ function CanvasShell({ boardId }: { boardId: string }) {
   }
 
   return (
-    <main className="flex flex-1 flex-col">
-      <div className="flex h-12 shrink-0 items-center justify-between border-b border-border-muted bg-background-surface px-4">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/brainboards/all"
-            className="flex items-center gap-1.5 text-sm text-text-secondary transition-colors hover:text-text-primary"
-          >
-            <ArrowLeft className="size-3.5" aria-hidden="true" />
-            Boards
-          </Link>
-          <span className="h-4 w-px bg-border-muted" aria-hidden="true" />
-          <span className="truncate text-sm font-medium text-text-primary">{boardTitle}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={() => addTextNode(centerPosition())}>
-            <Type className="size-3.5" aria-hidden="true" />
-            Text
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => addLinkNode(centerPosition())}>
-            <Link2 className="size-3.5" aria-hidden="true" />
-            Link
-          </Button>
-          <Button variant="ghost" size="sm" disabled={isUploading} onClick={() => fileInputRef.current?.click()}>
-            <FileUp className="size-3.5" aria-hidden="true" />
-            {isUploading ? "Uploading…" : "File"}
-          </Button>
-          <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChosen} disabled={isUploading} />
-        </div>
-      </div>
+    <main className="relative flex flex-1 flex-col">
+      {/* Toolbar makeover (Istiyak, Phase 2.5 round 7): the old "← Boards / title /
+          labeled buttons" strip is gone — the board's identity now lives in the global
+          Navbar's breadcrumb above this page entirely, so this is just the canvas plus
+          a floating, icon-only creation toolbar (Poppy's own layout) over it, not a
+          second header bar competing for the same space. */}
+      <CanvasToolbar
+        actions={[
+          { key: "text", label: "Add text note", icon: Type, onClick: () => addTextNode(centerPosition()) },
+          { key: "link", label: "Add link", icon: Link2, onClick: () => addLinkNode(centerPosition()) },
+          {
+            key: "file",
+            label: isUploading ? "Uploading…" : "Upload file",
+            icon: FileUp,
+            onClick: () => fileInputRef.current?.click(),
+            disabled: isUploading,
+            busy: isUploading,
+          },
+        ]}
+      />
+      <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChosen} disabled={isUploading} />
 
-      <div className="flex-1">
+      <div className="flex-1" onDragOver={handleDragOver} onDrop={handleDrop}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
+          onNodeDragStart={handleNodeDragStart}
           onNodeDragStop={handleNodeDragStop}
-          deleteKeyCode={["Backspace", "Delete"]}
+          // Deletion UX overhaul (ADR-0065): Delete key only — Backspace used to also be
+          // bound here, which meant merely SELECTING a node and then pressing Backspace
+          // for any ordinary reason silently deleted it with no confirmation and (at the
+          // time) no undo (bugs.md BUG-008). The 3-dot menu's own Delete action is the
+          // node header's equivalent — both go through the same board-store `deleteNode`.
+          deleteKeyCode={["Delete"]}
+          // Pan/select reconciliation (ADR-0080, reverses part of ADR-0066): Istiyak's
+          // original Figma-style ask (plain drag = marquee-select, pan via space+drag
+          // or scroll) is now reversed — plain left-drag pans directly, no space-bar
+          // step. `selectionOnDrag` removed (defaults to false) and `panOnDrag` now
+          // includes button 0 (left) alongside the existing 1/2 (middle/right), so all
+          // three buttons pan. Marquee-select isn't dropped, just moved to a modifier:
+          // `selectionKeyCode="Shift"` makes Shift+drag always draw a selection box
+          // regardless of panOnDrag — same Shift key Shift+click already uses for
+          // single-node toggle-select, so one modifier covers both. See ADR-0080 for
+          // the full before/after reasoning.
+          panOnDrag={[0, 1, 2]}
+          panOnScroll
+          selectionKeyCode="Shift"
+          multiSelectionKeyCode={["Shift"]}
+          minZoom={MIN_ZOOM}
+          maxZoom={MAX_ZOOM}
           fitView
-          className="bg-background-canvas"
+          fitViewOptions={FIT_VIEW_OPTIONS}
+          // BUG-021: this className never actually painted anything — React Flow's own
+          // unlayered `.react-flow { background-color: transparent }` rule always beat
+          // Tailwind's layered utility regardless of this prop. The real fix is a plain
+          // CSS override in globals.css (`.react-flow { background-color: ... }`); kept
+          // removed here rather than left in as dead, misleading markup.
         >
           {/* gap/size mirror packages/tokens/tokens/primitives.json's canvas.dotGap /
               canvas.dotSize — React Flow's Background takes raw numbers, not a CSS
               class, so these can't go through a Tailwind utility the way colors do
               (same reasoning as profile-menu.tsx's AVATAR_BUTTON_CLASSNAME comment:
               outside what the token-enforcement lint rule polices). The color itself
-              IS token-driven, via the generated CSS variable. */}
-          <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="var(--color-background-canvas-dot)" />
-          <Controls showInteractive={false} />
+              IS token-driven, via the generated CSS variable. Round 8 (ADR-0081,
+              Istiyak: canvas "looks very plain... dots grid... very unnoticeable"):
+              size bumped 1→1.5 and the color token itself darkened (semantic.json's
+              canvasDot, gray.200→gray.400) so the grid actually reads against the new
+              tinted background below, not just a barely-there texture. */}
+          <Background variant={BackgroundVariant.Dots} gap={20} size={1.5} color="var(--color-background-canvas-dot)" />
+          {/* Undo/Redo/zoom/fit live together in one horizontal pill, bottom-right
+              (Istiyak's follow-up: match Poppy's layout — undo, redo, zoom controls,
+              left to right). React Flow always renders a <Controls> child AFTER its
+              own built-in zoom/fit/interactive buttons, with no supported way to
+              interleave earlier ones before them — so every button here, including
+              zoom in/out/fit-view, is a custom ControlButton wired to useReactFlow()'s
+              own zoomIn/zoomOut/fitView, in the exact order they should visually
+              appear. This also keeps each button's border styling correct (React
+              Flow's horizontal-orientation CSS strips the border from whichever button
+              is LAST IN THE DOM, so DOM order has to equal visual order, not just be
+              reordered after the fact with CSS). */}
+          <Controls position="bottom-right" orientation="horizontal" showZoom={false} showFitView={false} showInteractive={false}>
+            <ControlButton onClick={() => undo()} disabled={!canUndo} aria-label="Undo" title="Undo (Ctrl+Z)">
+              <Undo2 size={12} style={CONTROL_ICON_STYLE} aria-hidden="true" />
+            </ControlButton>
+            <ControlButton onClick={() => redo()} disabled={!canRedo} aria-label="Redo" title="Redo (Ctrl+Shift+Z)">
+              <Redo2 size={12} style={CONTROL_ICON_STYLE} aria-hidden="true" />
+            </ControlButton>
+            <ControlButton onClick={() => zoomIn()} aria-label="Zoom in" title="Zoom in">
+              <Plus size={12} style={CONTROL_ICON_STYLE} aria-hidden="true" />
+            </ControlButton>
+            <ControlButton onClick={() => zoomOut()} aria-label="Zoom out" title="Zoom out">
+              <Minus size={12} style={CONTROL_ICON_STYLE} aria-hidden="true" />
+            </ControlButton>
+            <ControlButton onClick={() => fitView(FIT_VIEW_OPTIONS)} aria-label="Fit view" title="Fit view">
+              <Maximize2 size={12} style={CONTROL_ICON_STYLE} aria-hidden="true" />
+            </ControlButton>
+          </Controls>
         </ReactFlow>
       </div>
     </main>

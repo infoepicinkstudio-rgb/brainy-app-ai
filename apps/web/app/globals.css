@@ -25,6 +25,9 @@
   --color-background-accent: var(--color-background-accent);
   --color-background-accent-muted: var(--color-background-accent-muted);
   --color-background-danger: var(--color-background-danger);
+  --color-background-danger-muted: var(--color-background-danger-muted);
+  --color-background-info-muted: var(--color-background-info-muted);
+  --color-background-success-muted: var(--color-background-success-muted);
 
   --color-text-primary: var(--color-text-primary);
   --color-text-secondary: var(--color-text-secondary);
@@ -33,12 +36,48 @@
   --color-text-accent: var(--color-text-accent);
   --color-text-danger: var(--color-text-danger);
   --color-text-success: var(--color-text-success);
+  --color-text-info: var(--color-text-info);
+  /* Favorite-star fill (ADR-0083) — the one gap in the danger/success/info text-state
+     trio above; added rather than reaching for ribbon-solid-warning (a node-ribbon
+     token) or a raw, untraced Tailwind amber value. */
+  --color-text-warning: var(--color-text-warning);
 
   --color-border-default: var(--color-border-default);
   --color-border-muted: var(--color-border-muted);
   --color-border-focus: var(--color-border-focus);
   --color-border-danger: var(--color-border-danger);
   --color-border-success: var(--color-border-success);
+  --color-border-danger-muted: var(--color-border-danger-muted);
+  --color-border-info-muted: var(--color-border-info-muted);
+
+  /* Node card header backing — round 5 (ADR-0074, Istiyak: "Color we have set to solid
+     While in reference we have light theme"): switched from a solid saturated fill +
+     white text/icon to a pale tint background (`ribbonBg`, a .100 shade) paired with a
+     darker same-hue text/icon color (`ribbonFg`, .700) for contrast — matching the
+     reference's light-theme header exactly, instead of the louder solid-color banner
+     this had before. `ribbonSolid` (the OLD .600 solid value) is kept, now used only for
+     the small filled icon "badge" chip on the few types the reference shows one for
+     (Text's "T" block, YouTube's play glyph) — see node-header.tsx's `iconBadge`. */
+  --color-ribbon-bg-neutral: var(--color-ribbon-bg-neutral);
+  --color-ribbon-bg-info: var(--color-ribbon-bg-info);
+  --color-ribbon-bg-danger: var(--color-ribbon-bg-danger);
+  --color-ribbon-bg-success: var(--color-ribbon-bg-success);
+  --color-ribbon-bg-warning: var(--color-ribbon-bg-warning);
+  --color-ribbon-bg-accent: var(--color-ribbon-bg-accent);
+
+  --color-ribbon-fg-neutral: var(--color-ribbon-fg-neutral);
+  --color-ribbon-fg-info: var(--color-ribbon-fg-info);
+  --color-ribbon-fg-danger: var(--color-ribbon-fg-danger);
+  --color-ribbon-fg-success: var(--color-ribbon-fg-success);
+  --color-ribbon-fg-warning: var(--color-ribbon-fg-warning);
+  --color-ribbon-fg-accent: var(--color-ribbon-fg-accent);
+
+  --color-ribbon-solid-neutral: var(--color-ribbon-solid-neutral);
+  --color-ribbon-solid-info: var(--color-ribbon-solid-info);
+  --color-ribbon-solid-danger: var(--color-ribbon-solid-danger);
+  --color-ribbon-solid-success: var(--color-ribbon-solid-success);
+  --color-ribbon-solid-warning: var(--color-ribbon-solid-warning);
+  --color-ribbon-solid-accent: var(--color-ribbon-solid-accent);
 
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
@@ -85,4 +124,82 @@ button:not(:disabled) {
 
 button:disabled {
   cursor: not-allowed;
+}
+
+/* Slim, mostly-transparent scrollbar for node-card content (node-card-overhaul round 3
+   — Istiyak: "The scroll bars which comes looks very old. Can be a bit sexy. slim and
+   transparent"). Firefox via `scrollbar-width`/`scrollbar-color`, Chromium/Safari via the
+   `::-webkit-scrollbar` pseudo-elements — plain CSS, no new dependency. The thumb color
+   is derived from the existing `text.secondary` token via `color-mix()` rather than a new
+   hardcoded color or a new token-pipeline entry just for a translucent variant — keeps
+   ADR-0024's "everything traces to a token" rule intact without growing the token set for
+   one derived opacity value. */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-text-secondary) 40%, transparent) transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--color-text-secondary) 35%, transparent);
+  border-radius: 9999px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--color-text-secondary) 55%, transparent);
+}
+
+/* Canvas pane cursor (ADR-0080 — Istiyak: "entire canvas shows hand icon... should not
+   be the case only holding click and dragging should enable hand gesture"). React
+   Flow's own stylesheet (@xyflow/react/dist/style.css) puts the open-hand "grab" cursor
+   on `.react-flow__pane.draggable` the ENTIRE time `panOnDrag` is enabled — i.e. at
+   rest, not just while actually dragging — which is exactly the "entire canvas shows
+   hand icon" complaint. `.react-flow__pane.dragging` (the real active-drag state,
+   already `cursor: grabbing`) is deliberately left untouched below — that one's
+   correct as-is and is what should show while the user is actually panning.
+   `!important` is needed because this page's own `@xyflow/react/dist/style.css` import
+   (brainboards/[id]/page.tsx) can land after this global stylesheet in Next's CSS
+   bundle order — same specificity otherwise (both are a two-class compound selector),
+   so cascade order alone wouldn't reliably win; same reasoning as BUG-011's inline-style
+   fix for the control icons, just `!important` instead of an inline style since this
+   targets an internal React-Flow-rendered element with no prop to hook a style onto.
+   `:not(.dragging)` matters: React Flow adds BOTH `draggable` and `dragging` to the
+   pane's class list at once during an active drag, and an `!important` rule always
+   beats a non-`!important` one regardless of which was written later — without this
+   guard, this override would also have clobbered `.react-flow__pane.dragging`'s own
+   `cursor: grabbing` (caught live: the mid-drag cursor read "default" instead of
+   "grabbing" until this was added). */
+.react-flow__pane.draggable:not(.dragging) {
+  cursor: default !important;
+}
+
+/* Canvas background color (BUG-021, ADR-0082 — Istiyak: "Canvas looks very plain in
+   the background. Need to add a bit of character of it"). `[id]/page.tsx`'s `<ReactFlow
+   className="bg-background-canvas">` looked correct — the Tailwind utility exists, the
+   CSS variable resolves to the right color — but was silently never actually painting
+   anything, because React Flow's own stylesheet sets `.react-flow { background-color:
+   var(--xy-background-color, transparent) }` as a plain, UN-LAYERED rule (not wrapped
+   in any Tailwind `@layer`). Per the CSS Cascade Layers spec, an unlayered declaration
+   always wins over a layered one (Tailwind utilities live in `@layer utilities`)
+   regardless of specificity or source order — so this was losing every time, previously
+   invisible only because the token's old value was plain white, which looked identical
+   to "no background set" against this app's white page chrome. Caught live this round:
+   computed `background-color` on `.react-flow` read fully transparent despite
+   `--color-background-canvas` resolving correctly on that very element. Fixed the same
+   way as the pane-cursor override above — a plain, unlayered rule of our own, which
+   then DOES win by source order (last unlayered rule wins) without even needing
+   `!important` on specificity grounds alone, though it's kept for robustness against
+   import-order changes, consistent with this file's other React-Flow overrides. The
+   now-nonfunctional `bg-background-canvas` className stays removed from `page.tsx` —
+   dead markup that silently did nothing is worse than no className at all. */
+.react-flow {
+  background-color: var(--color-background-canvas) !important;
 }

@@ -46,6 +46,9 @@ export const boards = sqliteTable("boards", {
   title: text("title").notNull(),
   folder_id: text("folder_id").references(() => folders.id),
   deleted_at: text("deleted_at"),
+  // Favorite-star toggle on Boards List rows (ADR-0083). A plain boolean, no sort/filter
+  // behavior attached yet — scope was deliberately kept to "toggle + persistence only".
+  is_favorite: integer("is_favorite", { mode: "boolean" }).notNull().default(false),
   ...timestamps,
 });
 

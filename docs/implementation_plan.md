@@ -120,6 +120,8 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 - [x] Persistent navbar component (mounted at root layout, present on every route by construction)
 - [x] Avatar/profile dropdown: Settings link, keyboard-shortcuts reference, About/version info, cosmetic Sign Out
 - [x] Sign Out (cosmetic) returns to login screen without deleting the stored profile — verified by code: `signOut()` only flips `sessionActive`, never calls a delete endpoint
+- [x] Top Nav polish pass (ADR-0076/0077): wordmark motion removed, `shadow-nav` softened, avatar switched to a solid-fill badge for contrast, name+chevron trigger, profile dropdown rebuilt with icon-per-item + tinted hover states and a dedicated danger treatment for Sign out
+- [x] Board-canvas breadcrumb (ADR-0078/0079): inside a board, the navbar's left slot shows a breadcrumb instead of the wordmark — folder (when the board is in one) → "Boards" (clickable text) → board name, the last segment double-click-to-rename in place. Round 7 (ADR-0079) corrected the initial ordering/icon-vs-text choice after live-checking it against Istiyak's literal wording — see `testing.md`'s Phase 2.5 Round 7 entry
 
 *TF-11 — Settings*
 - [x] Settings route/page shell
@@ -249,6 +251,111 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 
 **Depends on:** Phase 1 (App Shell must exist so there's a navbar/route shell to put the canvas into).
 **Verify with:** `testing.md` Phase 2 section.
+
+---
+
+## Phase 2.5 — Node card overhaul + deletion/undo UX + video-link metadata pull-forward
+
+**Objective:** node cards read as compact, color-coded, and genuinely interactive (hover feedback, no dead "X" button); deletion is exclusively Delete-key or a 3-dot menu, backed by real undo/redo; pasting a YouTube link renders a thumbnail card immediately. Inserted here (not as part of Phase 3) because it's a correctness/UX pass over Phase 2's own node types, not new node *kinds* in the Phase 3 sense (edges/grouping/duplication) — see ADR-0065/ADR-0066.
+
+**Why this phase exists / how it differs from the plan:** not originally scheduled — added in response to direct user feedback on the already-built Phase 2 cards ("cards look very big... no mouse hovers reflect... very lazy") plus two real bugs (BUG-008, BUG-009). It also pulls forward ONLY the metadata/thumbnail slice of Phase 5's TF-05 checklist (see below) — the lazy yt-dlp/ffmpeg/Whisper extraction pipeline is untouched and still correctly blocked on Phase 4's context-assembly module.
+
+**Technical approach:** see ADR-0065 (card redesign, deletion model, video node type) and ADR-0066 (undo/redo, selection/pan/zoom) for the full reasoning — summarized in the checklist below.
+
+**Build checklist:**
+
+*Node card visual redesign*
+- [x] `NodeChrome` shrunk `w-64`→`w-56`, `rounded-lg`→`rounded-md`, real hover elevation (`shadow-surface`→`shadow-surface-raised` + border tint) added where none existed before
+- [x] New `color.info` token scale + `background.infoMuted`/`background.dangerMuted`/`text.info`/`border.infoMuted`/`border.dangerMuted` semantic tokens (no hardcoded hex — ADR-0024/0031)
+- [x] Shared `NodeHeader` (icon + truncated label + 3-dot menu) and `NodeMenu` components, used by all four node types instead of each hand-rolling its own header
+- [x] Investigated the "very very slow / laggy" report directly: root cause was the complete absence of any hover state (`shadow-surface`/`shadow.sm`'s alpha is close to imperceptible on its own) rather than a re-render bug; `React.memo` added to all four node components anyway as correct baseline practice, not because a specific re-render bug was found
+
+*Deletion UX*
+- [x] Standalone "X" delete button removed from every node header
+- [x] 3-dot menu added (Open where applicable + Delete)
+- [x] `deleteKeyCode` narrowed to `["Delete"]` only (BUG-008 — Backspace used to also trigger it)
+- [x] `board-store.ts`'s `deleteNode` now optimistically removes the node (and any edges touching it) from local state itself, not just the server (BUG-009) — makes every deletion path (keyboard, menu, programmatic) instant and consistent
+- [x] No confirmation dialog — covered by undo instead (ADR-0066)
+
+*Undo/redo*
+- [x] Session-scoped history stack in `board-store.ts` covering create, delete, position change, and data/type edits
+- [x] Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y keyboard shortcuts, guarded so an actively-focused text field keeps its own native undo
+- [x] Undo/Redo buttons in the same bottom-left control cluster as zoom (`<Controls>` + `<ControlButton>`)
+- [x] Backend POST `/api/boards/:boardId/nodes` accepts an optional explicit `id`, used only by undo-of-delete so a restored node is the same node, not a lookalike
+
+*Multi-select + Figma-like pan/zoom*
+- [x] ~~`selectionOnDrag` (drag empty canvas = marquee-select) + `panOnDrag={[1, 2]}` (pan via middle/right-button drag)~~ — **reversed in Round 8 (ADR-0080):** plain left-drag now pans directly (`panOnDrag={[0, 1, 2]}`, `selectionOnDrag` removed); marquee-select moved to `selectionKeyCode="Shift"` (Shift+drag), not dropped. `panOnScroll` (scroll pans, Ctrl/Cmd+scroll or pinch zooms) unchanged.
+- [x] `multiSelectionKeyCode={["Shift"]}` — Shift+click toggles a node in/out of selection
+- [x] `minZoom`/`maxZoom`/`fitViewOptions` retuned against the smaller w-56 card footprint
+- [x] Round 8 (ADR-0080): idle canvas-pane cursor fixed to the normal arrow (was showing React Flow's own persistent grab-hand cursor the entire time `panOnDrag` was enabled, not just while actually dragging) — `.react-flow__pane.draggable:not(.dragging) { cursor: default !important; }` in `globals.css`
+- [x] Round 8 (ADR-0081): canvas background changed from plain white to a light `accent.50` tint and the dot-grid darkened/enlarged for visibility — surfaced BUG-021 (the canvas's `bg-background-canvas` className had never actually painted anything, due to React Flow's own un-layered stylesheet always beating a Tailwind `@layer utilities` rule targeting the same element), fixed with a plain un-layered CSS override instead
+
+*Video-link metadata (Phase 5's TF-05, metadata/thumbnail slice only)*
+- [x] YouTube link parser (`apps/web/lib/youtube.ts`, watch/youtu.be/shorts/embed URL shapes)
+- [x] Metadata/thumbnail fetch via YouTube's public oEmbed endpoint, server-side (`GET /api/link-preview?url=`, `apps/server/src/routes/link-preview.ts`) — no API key needed
+- [x] Distinct `video` node type (`VideoNode` component): thumbnail + title + click-through to the original, explicitly no in-app playback
+- [x] Pasting a YouTube URL on the canvas creates a `video` node directly; typing/pasting a YouTube URL into an existing `link` node's URL field converts it in place
+- [x] Invalid/unreachable video link shows a clear error state on the card itself (not a crash), and the raw link is still clickable
+- [ ] Instagram link parser + metadata — explicitly OUT of scope for this pass (Phase 5's own checklist item, not pulled forward)
+- [ ] Lazy yt-dlp/ffmpeg/Whisper extraction pipeline — explicitly OUT of scope (still blocked on Phase 4's context-assembly module, per Phase 5's own "Depends on" line)
+
+*Round 2 (ADR-0067 through ADR-0071) — control cluster fix, universal type-adaptive paste/upload, resizable cards, ribbon-behind-card styling pass*
+- [x] BUG-011 fixed: undo/redo/zoom/fit icons no longer render as filled blobs (inline `style={{ fill: "none" }}`); control cluster moved to `<Controls position="bottom-right" orientation="horizontal">`, order undo/redo/zoom-in/zoom-out/fit-view
+- [x] `GET /api/link-preview` widened beyond YouTube-only: generic title+favicon fetch for any http(s) URL (capped read, regex-extracted `<title>`/favicon `<link>`), plus Vimeo's own public oEmbed endpoint alongside YouTube's — ADR-0067/ADR-0069
+- [x] Link node header now shows the fetched title+favicon (or the raw URL as plain text on fetch failure) instead of two permanently-empty bordered `<input>` boxes; title stays manually editable (click to edit inline); notes textarea collapsed by default, expands on focus/content
+- [x] Plain-text paste onto bare canvas now creates a text node seeded with the pasted content (previously a no-op) — ADR-0069
+- [x] File uploads get a server-computed `fileKind` (pdf/docx/xlsx/image/other) driving a distinct card icon per kind — ADR-0069
+- [x] A hover-only delete "X" (top-left, routes through the same `deleteNode`/undo path) added back as a third deletion path alongside the 3-dot menu and Delete key — ADR-0068, amends ADR-0065
+- [x] Cards resizable by dragging the bottom-right corner (`NodeResizeControl`, shown only when selected); size persisted to `data.cardWidth`/`cardHeight` on resize-end only; undoable in the same history stack as move/data edits — ADR-0070
+- [x] BUG-012 fixed: resize-driven size must be read from `data.cardWidth`/`cardHeight`, never React Flow's own `NodeProps.width`/`height` (those reflect measured, not explicit, size)
+- [x] Ribbon-behind-card header structure (a separate colored layer sitting behind/peeking out around the white body card, not the top strip of one bordered box) applied to all four node types — ADR-0071; BUG-013 fixed (CSS margin-collapse was hiding it entirely)
+- [x] Icon+color-per-type system: text=info/blue, link=neutral/gray, file/document=warning/orange (unified color, per-kind icon kept), YouTube=danger/red, Vimeo=accent/purple — ADR-0071
+- [x] Document card body shows file size + a download affordance; YouTube thumbnail shows a channel-name badge (bottom-left) when known
+- [x] Chat-bubble "ask AI" icon from the reference deliberately omitted entirely (Phase 4 chat node doesn't exist yet) — documented call, ADR-0071
+- [x] Colored connector/handle dot from the reference deliberately deferred, not implemented — no edge-creation UI/`<Handle>` exists in the app yet, so a connector dot would be a dead affordance for an unbuilt feature, same reasoning as the chat-bubble omission — ADR-0071
+
+*Round 3 (ADR-0072) — delete "X" repositioned, ribbon tightened, real resize/link-conversion bugs fixed, slim scrollbars*
+- [x] BUG-014 fixed: a `link` node whose URL already resolves to a recognized video platform now converts to a real video card on mount (previously the mount effect explicitly skipped any video URL, assuming a `blur` event would handle it — one never fires for a server-loaded node) and also converts live on every keystroke, not just on blur
+- [x] BUG-015 fixed: resize handle enlarged 10px→14px with stronger border/shadow — React Flow's own CSS centers the handle exactly on the card's corner POINT, so a small handle left most of its real hit-area outside the card's visible edge, causing a drag aimed at what the user can actually see to miss and move the card instead
+- [x] Hover-only delete "X" moved from outside the top-LEFT corner to outside the top-RIGHT corner, distinct from the header's own inline 3-dot menu
+- [x] Ribbon-behind-card overshoot tightened from 4px/side to 2px/side — still a real peek, not flush, but quieter
+- [x] Slim, mostly-transparent scrollbars (`.scrollbar-thin` utility, plain CSS, no new dependency) applied to every scrollable node-card surface, replacing the default blocky OS scrollbar
+
+*Round 4 (ADR-0073) — structural fix: ribbon/body collapsed into one flex-sized container*
+- [x] BUG-016 fixed: ribbon header and white body were two independently-sized boxes (one absolutely positioned against an unstyled wrapper, one with its own explicit pixel style) that visibly drifted apart mid-resize, with the resize handle floating detached from the card — rebuilt as a single `flex flex-col` container where header is `shrink-0` and body is `flex-1 min-h-0`, so the body's size is always derived from the one shared container and cannot drift or lag
+- [x] Video thumbnail and file-card image changed from a fixed height to `flex-1 min-h-0` (once resized) so the actual media area grows with the card, not just the header — the literal "resize only resizes the header" complaint
+- [x] Hover-delete "X" pushed further out again (`-top-4/-right-4`), confirmed live with a real ~6px/4px gap from the 3-dot menu
+- [x] File/document card header label changed from the specific filename to the generic "Documents" category word (filename moved into the body, next to its own small icon), matching the reference screenshots exactly
+- [x] Text card's header icon now sits inside a small filled chip (`iconBadge`), matching the reference's distinct badge treatment
+
+*Round 5 (ADR-0074) — polish pass: light-tint headers, "open" icon beside the 3-dot menu, corner-radius nesting fix, re-matched icon choices*
+- [x] Header/ribbon color switched from a solid `.600`-shade fill + white text/icon to a pale `.100`-shade tint (`ribbonBg`) + darker `.700`-shade text/icon (`ribbonFg`) of the same hue, across all four node types and the ribbon-behind-card backdrop — matches the reference's light theme exactly; old `.600` solid value kept as `ribbonSolid`, now scoped to the `iconBadge` chip only
+- [x] "Open" action moved out of the 3-dot dropdown into its own always-visible icon button directly beside the menu trigger — `NodeMenu` no longer accepts `onOpen`/`openLabel` at all
+- [x] BUG-017 fixed: body's `rounded-md` (8px) didn't nest correctly inside the outer container's `rounded-lg` (12px) minus its 2px padding (ideal inner radius 10px) — changed to `rounded-lg` to match, removing the "clipped at the corners" look
+- [x] YouTube's generic `Clapperboard` icon swapped for `SquarePlay` in `iconBadge`'s solid red chip (no literal YouTube glyph exists in this lucide-react version — confirmed); Vimeo kept its own plain `Video` glyph in purple; Text's `iconBadge` now correctly passes `accent="info"` (previously defaulted to neutral/gray, a round-4 gap)
+
+*Round 6 (ADR-0075) — resize restricted to text, 3-dot menu removed, per-type colored hover/select ring, per-filetype document colors restored, text card read-only-by-default, link card redesign, drag-and-drop/paste-file upload fixed*
+- [x] Resize handle now only ever renders for the text card — `file-node.tsx`/`link-node.tsx`/`video-node.tsx` no longer pass `onResizeEnd` to `NodeChrome`
+- [x] The 3-dot menu removed entirely from every card header — `node-menu.tsx` deleted; `NodeHeader`'s "open" button generalized into a reusable hover-only action slot (icon configurable per card) also used for the text card's new "Edit" affordance
+- [x] Hover/selected ring color now derives from each card's own accent (`RIBBON_RING_SELECTED_CLASSES`/`RIBBON_RING_HOVER_CLASSES`), moved to the OUTER container so the whole card (ribbon + body) reads as selected as one unit, not just the body
+- [x] Hover-only delete "X" toned down — border/shadow removed, hover color changed from red to neutral gray
+- [x] File-card per-kind color restored (reversing ADR-0071's unification): PDF=red, Word/docx=blue, Excel/xlsx=green
+- [x] Text card is read-only by default with a hover "Edit" icon (new node still opens straight into edit mode); its read-only preview treats the first line as a title (bigger, medium weight)
+- [x] Link card header no longer inline-editable; the URL now lives in its own always-visible row below the header with a pencil edit icon; an Open Graph/Twitter-Card preview image (when the metadata fetch finds one) renders full-width above that row, same visual weight as the video card's thumbnail; header icon fallback changed from a chain-link glyph to `Globe`
+- [x] BUG-018 fixed: dragging a file onto the canvas, or pasting a file copied from the OS (not a URL/text), now creates a real file node through the existing upload path instead of falling through to the browser's native open/save handling
+
+*Round 7 (ADR-0079) — cross-agent `board-store.ts` build-break fixed (BUG-020); canvas sub-header replaced by a floating icon toolbar; breadcrumb reordered*
+- [x] BUG-020 fixed: the live device's `board-store.ts` had silently lost its `previewImageUrl?: string` field (round 6's link-preview-image work) when combined with a parallel nav agent's `boardFolderId`/`renameBoard` additions to the same file — broke Istiyak's real `npm run build` at type-check. Restored the field; both sides' work now coexist.
+- [x] `CanvasShell`'s old h-12 sub-header ("← Boards" link, board title, text-labeled Text/Link/File buttons) removed entirely — redundant with the Navbar breadcrumb now covering the same identity (ADR-0078)
+- [x] New `CanvasToolbar` (`apps/web/components/canvas/canvas-toolbar.tsx`): a floating vertical icon-only palette, top-left of the canvas, carrying the same three node-creation actions (Text/Link/File) as plain icon buttons with hover tooltips showing the full action name — no motion design beyond the existing hover color-fade, per Istiyak's explicit Phase-8 deferral
+- [x] New `Tooltip` primitive (`apps/web/components/ui/tooltip.tsx`) — CSS-only (`group-hover` + opacity), no new dependency
+- [x] `BoardBreadcrumb` reordered/reworded: folder (if any) → "Boards" as real clickable text (was an icon-only Home link) → board name — matches Istiyak's literal correction, live-checked against a board actually inside the "Research" folder before and after the change
+- [x] Bottom-right undo/redo/zoom/fit-view cluster checked against this round's "right bottom corner like poppy" ask — already satisfies it from an earlier round, no change needed
+
+- [x] **Phase 2.5 verified** — exercised directly in a sandboxed copy of the app (own `npm run dev`, Playwright against it): create each node type, hover a card, multi-select via Shift+click and via marquee-drag, delete via Delete key, the 3-dot menu, and the hover-only X, undo/redo through several steps (including resize), paste a YouTube URL, paste plain text, paste a non-video URL, type a YouTube URL into a link node, upload files of different kinds, drag-resize a card and confirm persistence across reload, pan via scroll, zoom via Ctrl+scroll. Screenshots confirmed the ribbon-behind-card look and per-type accent colors render correctly on all four node types. Round 5: re-verified all five card instances (text/YouTube/Vimeo/file/link) side-by-side against the reference's pale-tint header colors (confirmed via computed `getComputedStyle` background/text colors, not just visual judgment), confirmed the open-icon sits beside and to the left of the 3-dot menu trigger and is independently clickable, confirmed the dropdown menu no longer lists "Open", and confirmed the corner-radius fix via computed border-radius/padding/gap measurements on a resized, scrolling text card. Round 6: confirmed the resize handle appears ONLY on the text card (selected, for all four types, via `.react-flow__resize-control` count); confirmed zero `[aria-label="Node actions"]` buttons exist anywhere on the board; confirmed per-type selected/hover ring colors via computed `box-shadow` on two simultaneously multi-selected cards of different accents (distinct oklab colors, not one shared blue); confirmed per-filetype document colors via computed background color keyed to each file's actual filename (pdf/docx/xlsx all distinct); confirmed the text card's read-only preview + hover Edit button + textarea-on-click flow, and that a brand-new empty text card still opens directly into edit mode; confirmed the link card's URL row and edit-pencil render unconditionally (not just on hover/before resolution) and that a preview-image box renders correctly (verified with a `data:` URI image, sidestepping this sandbox's lack of real internet egress to external image hosts — a known, previously-documented limitation, not a regression); confirmed drag-and-drop and clipboard-file-paste both create a real file node via an actual `POST /api/files/upload` network request (not just a DOM check), including correcting a first attempt at the paste test itself, which used a generically-dispatched event lacking real `clipboardData` and so wasn't exercising the app's own code path at all. Round 7: reproduced and fixed the real `npm run build` type-check failure (not just the truncated error Istiyak saw), confirmed clean `npm run build` on both `apps/web` and `apps/server` workspaces against a freshly re-staged copy of the live device state; confirmed live that the breadcrumb (with the nav agent's `boardFolderId`/`renameBoard`) and the new floating toolbar (icon buttons, tooltip-on-hover, actually creating a node on click) work correctly together with zero console/page errors; confirmed the new breadcrumb order/wording against a board actually moved into a folder; confirmed the old sub-header is completely gone from the DOM. Round 8: confirmed via computed `getComputedStyle(.react-flow__pane).cursor` that the idle cursor reads "default" (not "grab") and that it correctly becomes "grabbing" mid-drag (not clobbered by the idle-state override, after catching and fixing exactly that regression during verification itself); confirmed a plain left-drag starting on genuinely empty canvas pans the viewport (`.react-flow__viewport`'s `transform` changes) while a Shift+drag over the same empty area instead draws a `.react-flow__selection` rectangle and does NOT pan; confirmed `.react-flow`'s computed `background-color` matches `--color-accent-50` exactly (`rgb(238, 242, 255)`) after first catching, via the same computed-style check, that it read fully transparent despite the CSS variable and Tailwind utility both looking correct (BUG-021); screenshot-confirmed the new tinted background and darker/larger dots visually match Istiyak's reference image.
+
+**Depends on:** Phase 2 (reuses its node types, store, and autosave mechanism — not rebuilt).
+**Verify with:** `testing.md`'s own Phase 2.5 section.
 
 ---
 

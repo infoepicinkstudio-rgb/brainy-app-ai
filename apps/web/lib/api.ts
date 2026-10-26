@@ -88,7 +88,12 @@ export const api = {
     request<T>(path, { method: "PUT", body: body !== undefined ? JSON.stringify(body) : undefined }),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PATCH", body: body !== undefined ? JSON.stringify(body) : undefined }),
-  delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  // Optional body — the folder-delete-strategy choice (ADR-0082) is the first DELETE
+  // call in this app that needs one; every pre-existing DELETE call still passes none,
+  // so this stays backward compatible (same bodyless-request handling as before, see
+  // the Content-Type comment above).
+  delete: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: "DELETE", body: body !== undefined ? JSON.stringify(body) : undefined }),
 };
 
 /**

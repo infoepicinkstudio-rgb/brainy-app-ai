@@ -5,7 +5,7 @@
 // click-outside + Escape-to-close shape as components/layout/profile-menu.tsx (the
 // established pattern for this app's only other dropdown menu).
 import * as React from "react";
-import { Check, FolderInput, type LucideIcon, MoreVertical, Pencil, Trash2 } from "lucide-react";
+import { Check, Folder, FolderX, type LucideIcon, MoreVertical, Pencil, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { BoardSummary } from "@/components/boards/board-card";
 import type { FolderSummary } from "@/stores/folders-store";
@@ -62,7 +62,9 @@ export function BoardRowMenu({
           role="menu"
           aria-label="Board actions"
           className={cn(
-            "absolute top-full right-0 z-10 mt-1 w-56 rounded-lg border border-border-default bg-background-surface-raised py-1 shadow-surface-raised",
+            // overflow-hidden (BUG-023): without it, the first/last item's square hover
+            // rectangle pokes past this container's rounded corners on hover.
+            "absolute top-full right-0 z-10 mt-1 w-56 overflow-hidden rounded-lg border border-border-default bg-background-surface-raised py-1 shadow-surface-raised",
             "motion-safe:duration-fast motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-top-1"
           )}
         >
@@ -78,8 +80,14 @@ export function BoardRowMenu({
 
           <div className="my-1 border-t border-border-muted" />
           <div className="px-3 py-1.5 text-xs font-medium text-text-muted">Move to folder</div>
+          {/* Icon pairing fixed (ADR-0084, Istiyak: "No Folder icon looks weird"): this used to pair the unselected state with
+              FolderInput ("move into a folder") on the "No folder" row too, which reads
+              backwards for an option that means the opposite — removing a board from
+              its folder. FolderX reads correctly for that one row; every real folder
+              below uses the plain Folder icon, matching the one the sidebar itself
+              already uses consistently, instead of a second, busier icon. */}
           <MenuButton
-            icon={board.folder_id === null ? Check : FolderInput}
+            icon={board.folder_id === null ? Check : FolderX}
             onClick={() => {
               onMoveToFolder(null);
               setIsOpen(false);
@@ -90,7 +98,7 @@ export function BoardRowMenu({
           {folders.map((folder) => (
             <MenuButton
               key={folder.id}
-              icon={board.folder_id === folder.id ? Check : FolderInput}
+              icon={board.folder_id === folder.id ? Check : Folder}
               onClick={() => {
                 onMoveToFolder(folder.id);
                 setIsOpen(false);
