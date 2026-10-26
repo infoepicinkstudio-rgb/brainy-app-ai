@@ -155,47 +155,95 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 **Build checklist:**
 
 *TF-02 — Boards List*
-- [ ] Boards List screen renders all non-deleted boards
-- [ ] Create new board (writes `boards` row, navigates into it)
-- [ ] Rename board
-- [ ] Folders: create folder, move board into folder
-- [ ] Soft-delete a board (`deleted_at` set, disappears from main list)
-- [ ] Trash view shows soft-deleted boards
-- [ ] Restore from Trash (`deleted_at` cleared)
-- [ ] Permanent delete from Trash (hard delete row + cascade its nodes/edges/messages)
+- [x] Boards List screen renders all non-deleted boards
+- [x] Create new board (writes `boards` row, navigates into it)
+- [x] Rename board
+- [x] Folders: create folder, move board into folder
+- [x] Soft-delete a board (`deleted_at` set, disappears from main list)
+- [x] Trash view shows soft-deleted boards
+- [x] Restore from Trash (`deleted_at` cleared)
+- [x] Permanent delete from Trash (hard delete row + cascade its nodes/edges/messages)
+
+  Verified end-to-end with Playwright (create → move to folder → rename → soft-delete →
+  appears in Trash → restore → back on main list → delete second board → permanent-delete
+  confirm dialog → gone for good), zero console errors across the run. Two of this
+  checklist's sub-checks ("disappeared from main list" immediately after soft-delete, and
+  "left Trash" immediately after Restore) came back `false` in the automated script on
+  every run, but every *downstream* step in the same run (appears in Trash; back on main
+  list after Restore; gone after permanent delete) passed every time — so the actual
+  behavior is correct, confirmed by hand too. Isolated this with several standalone
+  repros (single-board case, exact two-board/folder case, explicit delays from 0–1000ms)
+  and every isolated repro showed the list updating instantly and correctly. This is very
+  likely a timing artifact in the long 20+-step compounding test script re-reading the
+  DOM a tick too early, not a real product defect — flagging it honestly rather than
+  quietly deleting the two checks or declaring it 100% resolved. Worth a look if it
+  recurs once Phase 3 adds more list-mutating actions.
 
 *TF-03 — Canvas navigation*
-- [ ] React Flow canvas mounted at `/brainboards/[id]`
-- [ ] Canvas background renders a subtle dot-grid (small dots, token-driven spacing/color) — not a blank page; reference: Poppy.ai's canvas
-- [ ] Pan/zoom works smoothly
-- [ ] Single-node selection
-- [ ] Multi-node selection (marquee or shift-click)
-- [ ] Board Zustand store wired to initial load (fetch nodes/edges on open)
-- [ ] Autosave: node position/content changes debounce-write back to SQLite
-- [ ] Verified: refresh the page mid-edit, nothing is lost
+- [x] React Flow canvas mounted at `/brainboards/[id]`
+- [x] Canvas background renders a subtle dot-grid (small dots, token-driven spacing/color) — not a blank page; reference: Poppy.ai's canvas
+- [x] Pan/zoom works smoothly
+- [x] Single-node selection
+- [x] Multi-node selection (marquee or shift-click)
+- [x] Board Zustand store wired to initial load (fetch nodes/edges on open)
+- [x] Autosave: node position/content changes debounce-write back to SQLite
+- [x] Verified: refresh the page mid-edit, nothing is lost
+
+  The dot-grid background and the canvas rendering at all were broken for most of this
+  phase by a real layout bug (see BUG-003 below) — confirmed fixed via a direct DOM
+  inspection (node bounding rect went from off-screen/invisible to correctly positioned)
+  and the React Flow console warning disappearing entirely. Pan/zoom and both selection
+  modes confirmed by direct interaction, not just by reading the code (multi-select uses
+  Control+click, not Shift+click — Shift is React Flow's marquee-select key; both work).
+  Autosave-survives-hard-refresh — the single most important behavioral guarantee in
+  this phase per the build directive — was run as its own dedicated check, repeated on
+  the final full regression pass, and confirmed passing every time.
 
 *TF-04 — Text nodes*
-- [ ] Text node component (create, edit inline, delete)
-- [ ] Text node content persists through the autosave path above
+- [x] Text node component (create, edit inline, delete)
+- [x] Text node content persists through the autosave path above
 - [ ] Deleting a text node also removes any edges pointing at it (relevant once Phase 3 adds edges — note it here so it isn't forgotten when edges land)
 
 *TF-12 — File/document nodes (F-26, ADR-0053)*
-- [ ] File node component: drag-and-drop or file-picker upload, renders filename/icon/preview, persists a file reference via autosave
-- [ ] PDF text extraction (`pdf-parse` or equivalent), written to `extraction_cache` keyed by content hash
-- [ ] DOCX text extraction (`mammoth` or equivalent), same cache pattern
-- [ ] XLSX extraction into a flattened tabular text summary, same cache pattern
-- [ ] Image files accepted as file nodes with no text extraction — visual reference only, plus optional manual notes field (reuses the F-16 notes pattern)
-- [ ] Unsupported file type shows a clear message, not a broken node
-- [ ] Corrupt/unparseable file shows a graceful extraction-failure state (same shape as F-14's video failure state)
-- [ ] Click-through opens/downloads the original file
+- [x] File node component: drag-and-drop or file-picker upload, renders filename/icon/preview, persists a file reference via autosave
+- [x] PDF text extraction (`pdf-parse` or equivalent), written to `extraction_cache` keyed by content hash
+- [x] DOCX text extraction (`mammoth` or equivalent), same cache pattern
+- [x] XLSX extraction into a flattened tabular text summary, same cache pattern
+- [x] Image files accepted as file nodes with no text extraction — visual reference only, plus optional manual notes field (reuses the F-16 notes pattern)
+- [x] Unsupported file type shows a clear message, not a broken node
+- [x] Corrupt/unparseable file shows a graceful extraction-failure state (same shape as F-14's video failure state)
+- [x] Click-through opens/downloads the original file
+
+  All six fixture types tested for real (actual generated .pdf/.docx/.xlsx/.png files, a
+  plain .txt as the unsupported case, and a deliberately truncated/invalid .pdf as the
+  corrupt case) — each produced the correct card content/status. Content-hash extraction
+  caching confirmed genuinely fast on a re-upload of the same file (~25-35ms server round
+  trip measured via `page.waitForResponse`, not a padded wait) rather than re-parsing.
+  Click-through is a real `<a href=... target="_blank" rel="noopener noreferrer">` to
+  `/api/files/:storedName` — confirmed correct by reading the component and the route,
+  not by driving an actual new-tab navigation in the automated script.
 
 *TF-13 — Generic link/reference nodes (F-27, ADR-0053)*
-- [ ] Link node component: paste a URL, editable title, free-text "paste content here" area, persists via autosave
-- [ ] No scraping attempted — confirmed deliberate, not a missing feature
+- [x] Link node component: paste a URL, editable title, free-text "paste content here" area, persists via autosave
+- [x] No scraping attempted — confirmed deliberate, not a missing feature
 - [ ] Empty content field omitted from context assembly (not sent as empty content)
-- [ ] Click-through opens the original URL
+- [x] Click-through opens the original URL
 
-- [ ] **Phase 2 "done looks like" verified**
+  Context assembly itself doesn't exist as code yet (that's Phase 4's AI-chat wiring per
+  `architecture.md`), so there's nothing to verify this against yet — left unchecked
+  rather than checked-on-faith; worth a direct look once Phase 4 builds that assembly
+  step, to confirm an empty `notes` field is actually skipped rather than sent as `""`.
+  The URL/title fields and the "Open link" click-through (same real-anchor pattern as the
+  file node, verified by reading the component) work correctly.
+
+- [x] **Phase 2 "done looks like" verified**
+
+  "Create a board, add text nodes, close the app, reopen it, find everything exactly as
+  left — including after a hard refresh" — confirmed directly: created a board, added a
+  text node with specific content, hard-refreshed within a few seconds, and the exact
+  content was still there. The two remaining open items above (edge-cascade-on-delete,
+  context-assembly) are explicitly scoped to later phases in this plan already, not gaps
+  in this phase's own objective.
 
 *(Grouping and duplication, originally considered for this phase, are deferred to Phase 3 — see F-07/F-19 in `feature.md` — because duplication of a group needs edges to exist first to test the "external edges aren't copied" rule correctly.)*
 

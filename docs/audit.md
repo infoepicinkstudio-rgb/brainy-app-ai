@@ -61,4 +61,39 @@
 
 ---
 
-*(Entries for Phases 2–7 are added the same way, as each phase is reached. Don't pre-create empty headers for phases far in the future — add the section when its audit is actually run, so this file's structure reflects real history rather than a template skeleton.)*
+## Audit — Phase 2 — 2026-10-26
+
+**Claimed done per implementation_plan.md:** yes, as of this date — all build-checklist items checked except two explicitly deferred to later phases (edge-cascade-on-delete, needs Phase 3's edges; context-assembly, needs Phase 4's AI-chat wiring), both already called out in `implementation_plan.md`'s own text as forward dependencies, not gaps.
+**Matches prd.md §6 "done looks like"?:** yes — "create a board, add text nodes, close the app, reopen it, find everything exactly as left, including after a hard refresh" was verified directly, not assumed.
+
+**Structural check against architecture.md:**
+- Folder structure matches §2? Yes — `apps/server/src/routes/{boards,nodes,files}.ts`, `apps/server/src/lib/{uploads,extraction}.ts`, `apps/web/app/brainboards/{all,trash,[id]}/`, `apps/web/components/{boards,canvas}/`, `apps/web/stores/board-store.ts` all land where architecture.md's folder map says this phase's pieces belong.
+- Any new files/folders not described anywhere? None found — everything added this phase maps to a named feature/route in `feature.md` or `architecture.md`.
+- Any file described in architecture.md that doesn't actually exist yet? Not checked exhaustively against every future-phase reference; nothing in Phase 2's own described scope is missing.
+
+**Scope check against feature.md:**
+- Anything built that isn't described in any feature entry? No deliberate scope creep found. Two small additions beyond the literal checklist text, both inside what F-25/ADR-0049 (error-handling conventions) already requires rather than new scope: a double-submit guard on the file-upload button, and request timeouts added to `apps/web/lib/api.ts` (the latter was actually a pre-existing Phase 1 gap, fixed here only because the file was already open for Phase 2's PATCH/DELETE work).
+- Any feature marked done whose Level-2 flows in feature.md aren't actually all handled? F-27 (link nodes): the "empty content omitted from context assembly" flow can't be verified yet because context assembly doesn't exist as code until Phase 4 — left unchecked in `implementation_plan.md` rather than checked on faith. F-26 (file nodes) and F-27 (link nodes) both flow-match feature.md otherwise.
+
+**Orphans:**
+- Any file/function with nothing importing or calling it? None found in the files touched this phase.
+- Any "temporary"/"TODO: remove" code left in from earlier in the phase? None found — the `isUploading` guard and the `api.ts` timeout wrapper are both permanent, not scaffolding.
+
+**Skeptical pass (even pre-launch, this still matters — ADR-0049):**
+- Any secret or key visible anywhere it shouldn't be? Checked the new server/store/api files for hardcoded secrets, stray `console.log`/`console.error` — none found.
+- Any error path that would show a raw stack trace to the user instead of a plain message? File-node extraction failures and unsupported-type cases show a plain sentence, not a stack trace; the board-load failure shows "Can't reach the Brainy.ai backend..." with a retry button.
+- Any cost-incurring or data-mutating action without double-submit protection? Found and fixed one during this pass: the file-upload button had none — added an `isUploading` guard (see implementation_plan.md notes).
+- Any async action with no timeout/failure path? Found and fixed one during this pass: `apps/web/lib/api.ts` had no fetch timeout anywhere (a pre-existing Phase 1 gap) — added `AbortController`-based timeouts to both `request()` and `uploadFile()`.
+- This self-review is a first pass, not proof — Istiyak should still try to break it himself, especially the Settings save buttons from Phase 1 (see BUG-005 below — they were very likely silently broken by the CORS bug this whole time and deserve a direct re-check, not just a Phase 2 regression run).
+
+**Findings / action items:**
+- The CORS-methods bug (BUG-005) is retroactive: it very likely affected Phase 1's Settings provider-key and brand-profile saves too, undetected because Phase 1's own verification used curl (which bypasses browser CORS). Worth Istiyak manually re-testing those two Settings save buttons in the real app now that it's fixed.
+- Two Playwright-script-level "false" results (soft-delete-disappears-immediately, restore-leaves-trash-immediately) remain unresolved as test-harness timing noise, not product defects — see implementation_plan.md's TF-02 notes and BUG log for the investigation. Worth re-checking if it recurs once Phase 3 adds more list-mutating actions to the same screens.
+- Minor UX observation, not a bug: new nodes (Text/Link/File buttons) all spawn stacked at the same `centerPosition()` rather than cascading/offsetting from each other — fine for now, but worth a small offset if Istiyak finds himself frequently dragging nodes apart after adding several in a row.
+
+**Logged to bugs.md:** BUG-003, BUG-004, BUG-005, BUG-006, BUG-007
+**Logged to rules-decisions.md:** none — no deliberate deviations from the plan were made this phase, only bug fixes within the existing design.
+
+---
+
+*(Entries for Phases 3–7 are added the same way, as each phase is reached. Don't pre-create empty headers for phases far in the future — add the section when its audit is actually run, so this file's structure reflects real history rather than a template skeleton.)*

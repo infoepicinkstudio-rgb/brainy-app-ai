@@ -7,7 +7,9 @@
       "muted":     { "$value": "{color.gray.100}", "$type": "color" },
       "accent":    { "$value": "{color.accent.600}", "$type": "color" },
       "accentMuted": { "$value": "{color.accent.50}", "$type": "color" },
-      "danger":    { "$value": "{color.danger.600}", "$type": "color" }
+      "danger":    { "$value": "{color.danger.600}", "$type": "color" },
+      "canvas":    { "$value": "{color.white}",   "$type": "color" },
+      "canvasDot": { "$value": "{color.gray.200}", "$type": "color" }
     },
     "text": {
       "primary":   { "$value": "{color.gray.900}", "$type": "color" },

@@ -13,10 +13,14 @@
     "db:migrate": "tsx src/db/migrate.ts"
   },
   "dependencies": {
-    "fastify": "^5.12.7",
     "@fastify/cors": "^11.3.1",
+    "@fastify/multipart": "^10.1.6",
+    "@libsql/client": "^0.18.0",
     "drizzle-orm": "^0.45.4",
-    "@libsql/client": "^0.18.0"
+    "fastify": "^5.12.7",
+    "mammoth": "^1.13.0",
+    "pdf-parse": "^2.4.5",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
