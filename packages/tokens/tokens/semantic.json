@@ -1,8 +1,8 @@
 {
   "color": {
     "background": {
-      "page":      { "$value": "{color.white}",   "$type": "color" },
-      "surface":   { "$value": "{color.gray.50}",  "$type": "color" },
+      "page":      { "$value": "{color.gray.50}",   "$type": "color" },
+      "surface":   { "$value": "{color.white}",  "$type": "color" },
       "surfaceRaised": { "$value": "{color.white}", "$type": "color" },
       "muted":     { "$value": "{color.gray.100}", "$type": "color" },
       "accent":    { "$value": "{color.accent.600}", "$type": "color" },
@@ -22,8 +22,15 @@
       "default": { "$value": "{color.gray.200}",   "$type": "color" },
       "muted":   { "$value": "{color.gray.100}",   "$type": "color" },
       "focus":   { "$value": "{color.accent.500}", "$type": "color" },
-      "danger":  { "$value": "{color.danger.500}", "$type": "color" }
+      "danger":  { "$value": "{color.danger.500}", "$type": "color" },
+      "success": { "$value": "{color.success.500}", "$type": "color" }
     }
+  },
+  "shadow": {
+    "surface":     { "$value": "{shadow.sm}", "$type": "shadow" },
+    "surfaceRaised": { "$value": "{shadow.md}", "$type": "shadow" },
+    "overlay":     { "$value": "{shadow.lg}", "$type": "shadow" },
+    "accentFocus": { "$value": "{shadow.accentRing}", "$type": "shadow" }
   },
   "font": {
     "family": {

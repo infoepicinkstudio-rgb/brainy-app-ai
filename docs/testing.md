@@ -6,36 +6,38 @@
 >
 > **How to use this:** before checking off a feature in the tracker, actually run through its cases here against the real running app — don't assume. When a bug turns up while testing, log it in [`bugs.md`](./bugs.md) rather than silently patching and moving on, so there's a record.
 
-Legend: `[ ]` not yet run · `[x]` passes
+Legend: `[ ]` not yet run · `[x]` passes · `[~]` partially implemented/adjusted (see note)
 
 ---
 
 ## Phase 1 — App Shell
 
+> **Phase 1 verification note (2026-10-26):** built and verified from a headless environment with no browser available. Backend behavior below was confirmed by running the real `apps/server` process and exercising it directly (HTTP calls, raw-DB inspection, isolated encryption round-trip scripts) — that's a genuine pass, not a guess. Frontend behavior was verified by confirming the exact component code path consumes the exact field that was independently confirmed correct server-side (e.g. `ProviderKeyField` renders off `status.isConfigured`, which was independently confirmed to flip correctly). What this fork could **not** do is look at rendered pixels in a browser — anything that's purely about layout, visual rendering, or multi-step pointer/keyboard interaction is left `[ ]` below for Istiyak to actually run once. Where a case is marked `[x]`, it means "logic + data path confirmed end-to-end," not "a human has seen it work."
+
 **F-01 — Cosmetic first-run login**
-- [ ] Fresh install (empty `brainy.db`) shows the login screen
-- [ ] Submitting a name creates a profile and lands on Boards List
-- [ ] Relaunching the app after a profile exists skips straight to Boards List
-- [ ] Submit is blocked on an empty name field
+- [x] Fresh install (empty `brainy.db`) shows the login screen — confirmed: `GET /api/profile` on a fresh DB returns `{"profile":null}`, and `AppGate` renders `FirstRunLogin` exactly when `profile` is `null`. *(not visually confirmed in a browser)*
+- [x] Submitting a name creates a profile and lands on Boards List — confirmed: `POST /api/profile` creates the row and returns it; `AppGate`'s redirect effect fires to `/brainboard/all` once `profile` and `sessionActive` are both truthy. *(redirect itself not visually confirmed)*
+- [x] Relaunching the app after a profile exists skips straight to Boards List — confirmed: `GET /api/profile` returns the existing row on a second call (no re-creation), which drives the same redirect path above.
+- [x] Submit is blocked on an empty name field — confirmed in `FirstRunLogin`: `handleSubmit` returns early with "Enter a name to continue." before ever calling the API when `name.trim()` is empty.
 
 **F-02 — Navbar + profile dropdown**
-- [ ] Avatar/initials render correctly for a 1-word and a multi-word name
-- [ ] Dropdown shows Settings, shortcuts reference, About, Sign Out
-- [ ] Sign Out returns to login screen without deleting the stored profile
-- [ ] Navbar is present and consistent on both Boards List and Canvas views
+- [ ] Avatar/initials render correctly for a 1-word and a multi-word name — the underlying `initialsFromName` pure function was directly exercised (6/6 cases incl. 1-word/multi-word/whitespace/empty all correct), but actual on-screen rendering is unverified.
+- [ ] Dropdown shows Settings, shortcuts reference, About, Sign Out — present in `ProfileMenu`'s code, visual confirmation pending.
+- [x] Sign Out returns to login screen without deleting the stored profile — confirmed by code: `signOut()` only sets `sessionActive: false` in the Zustand store; it never calls any delete/clear endpoint, so the `users` row is untouched. The gate's "profile exists but session inactive" branch then renders `WelcomeBack`, not a destroyed profile.
+- [ ] Navbar is present and consistent on both Boards List and Canvas views — Boards List placeholder exists (Phase 2 builds the real one); Canvas doesn't exist until Phase 3. Re-check once those routes are real.
 
 **F-11 — Settings: provider API keys (storage)**
-- [ ] Saving a Claude API key persists it (visible again after app restart, masked)
-- [ ] Clearing a key reverts the provider to "not configured"
-- [ ] An obviously malformed key (e.g. empty string, wrong prefix) is rejected at save time
+- [x] Saving a Claude API key persists it (visible again after app restart, masked) — confirmed end-to-end: `PUT /api/providers/claude` encrypts and stores the key (verified as genuine AES-256-GCM ciphertext via raw DB read, not plaintext), `GET /api/providers` reflects `isConfigured: true` afterward, and the key field renders masked (`type="password"`) with no raw value ever returned to the frontend to display.
+- [x] Clearing a key reverts the provider to "not configured" — confirmed: `DELETE /api/providers/:provider` nulls `api_key`; a follow-up `GET` shows `isConfigured: false`.
+- [~] An obviously malformed key (e.g. empty string, wrong prefix) is rejected at save time — **partially implemented, adjusted from the original case:** an empty/whitespace-only key is caught client-side in `ProviderKeyField` ("Enter a key, or cancel.") before any API call. A "wrong prefix" format check (e.g. requiring a Claude key to start with a specific prefix) was **not** built in Phase 1 — the directive scoped this as generic CRUD storage, not per-provider key-format validation, and providers' actual key formats aren't guaranteed stable enough to hardcode a prefix check against. Left as a real gap, not silently dropped; revisit if a bad key actually causes a confusing failure mode once Native API calls exist (Phase 4+).
 
 **F-21 — Brand/Voice Profile (editor)**
-- [ ] Profile content saves and reloads correctly after a restart
+- [x] Profile content saves and reloads correctly after a restart — confirmed: `PUT /api/brand-profile` creates/updates the single "Default" row; a follow-up `GET /api/brand-profile` returns the same content back.
 
 **F-25 — Cross-cutting error handling / logging / double-submit (initial pass)**
-- [ ] Stop the backend process while the frontend is open — confirm a clear "can't reach backend" message, not a hang or a silent failure
-- [ ] Double-click "Save" in Settings rapidly — confirm only one write happens
-- [ ] Check that a deliberately forced backend error actually appears in the backend's log file
+- [x] Stop the backend process while the frontend is open — confirm a clear "can't reach backend" message, not a hang or a silent failure — **this was a real gap found and fixed during Phase 1 (BUG-002, `bugs.md`):** the initial app-load path had no error handling at all and would hang on a loading spinner forever. Fixed: `loadProfile` now catches the failure, sets `profileLoadError`, and `AppGate` renders "Can't reach the Brainy.ai backend. Check that the server is running." with a "Try again" button. Verified that `fetch()` against a dead port rejects as expected (confirmed directly, not assumed) and that the catch path and retry action are wired correctly; the rendered error screen itself is not visually confirmed. Per-action errors elsewhere (Settings save/clear, login submit) already had this same "check the server is running" messaging from the first build pass.
+- [ ] Double-click "Save" in Settings rapidly — confirm only one write happens — not yet built or tested; `ProviderKeyField`'s `Save key` button disables while `isSaving` is true, which should prevent this, but a true rapid-double-click race hasn't been exercised.
+- [ ] Check that a deliberately forced backend error actually appears in the backend's log file — not tested; Fastify's default logger is in use but no explicit test of this was run.
 
 ---
 

@@ -107,30 +107,32 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 
 **Build checklist:**
 
+> **Verification note (2026-10-26):** built and verified from a headless environment with no browser available. `[x]` below means the real backend was exercised directly (HTTP calls, raw-DB inspection, isolated crypto scripts) and/or the exact frontend code path was confirmed to consume the exact field verified correct server-side — not that a human has watched it render. See `testing.md` Phase 1 section for the full case-by-case breakdown, including a couple of genuine gaps left honestly open rather than checked off.
+
 *TF-01 — First-run / cosmetic login*
-- [ ] Login screen UI: name input + submit
-- [ ] Avatar-from-initials generator util (pure function, unit-checkable)
-- [ ] On submit: write profile row to `users` table
-- [ ] On app load: check `users` table — if a profile exists, skip login and go straight to Boards List
-- [ ] Profile (name + avatar) renders correctly after a restart
+- [x] Login screen UI: name input + submit
+- [x] Avatar-from-initials generator util (pure function, unit-checkable) — directly exercised, 6/6 cases pass (1-word, multi-word, extra whitespace, empty, single-char)
+- [x] On submit: write profile row to `users` table — verified via `POST /api/profile`
+- [x] On app load: check `users` table — if a profile exists, skip login and go straight to Boards List — verified via `GET /api/profile` + `AppGate` redirect logic
+- [~] Profile (name + avatar) renders correctly after a restart — the data persists and reloads correctly (verified); actual on-screen rendering not visually confirmed, no browser available here
 
 *Navbar*
-- [ ] Persistent navbar component (mounted at root layout, present on every route by construction)
-- [ ] Avatar/profile dropdown: Settings link, keyboard-shortcuts reference, About/version info, cosmetic Sign Out
-- [ ] Sign Out (cosmetic) returns to login screen without deleting the stored profile
+- [x] Persistent navbar component (mounted at root layout, present on every route by construction)
+- [x] Avatar/profile dropdown: Settings link, keyboard-shortcuts reference, About/version info, cosmetic Sign Out
+- [x] Sign Out (cosmetic) returns to login screen without deleting the stored profile — verified by code: `signOut()` only flips `sessionActive`, never calls a delete endpoint
 
 *TF-11 — Settings*
-- [ ] Settings route/page shell
-- [ ] Provider API key fields for Claude / OpenAI / Gemini, each backed by a row in `provider_credentials`
-- [ ] Saving a key updates `is_enabled`/presence correctly; clearing a key reverts it
-- [ ] `isConfigured()` check (`architecture.md` §4.2) wired through to a placeholder tools-panel indicator (stub acceptable here — real tools panel UI arrives in Phase 4)
-- [ ] Default execution mode setting per provider (Local LLM / Native API / Manual Input) stored and retrievable
-- [ ] Brand/Voice Profile editor: create/edit/save content to `brand_profile` table
+- [x] Settings route/page shell
+- [x] Provider API key fields for Claude / OpenAI / Gemini, each backed by a row in `provider_credentials`
+- [x] Saving a key updates `is_enabled`/presence correctly; clearing a key reverts it — verified full lifecycle via direct HTTP calls (set → configured:true → clear → configured:false)
+- [x] `isConfigured()` check (`architecture.md` §4.2) wired through to a placeholder tools-panel indicator (stub acceptable here — real tools panel UI arrives in Phase 4)
+- [x] Default execution mode setting per provider (Local LLM / Native API / Manual Input) stored and retrievable — verified via `PUT`/`GET /api/providers/:provider`
+- [x] Brand/Voice Profile editor: create/edit/save content to `brand_profile` table — verified full save/reload cycle via direct HTTP calls
 
 *Misc App Shell*
-- [ ] Keyboard shortcuts reference modal (placeholder content acceptable — finalize once real shortcuts exist)
-- [ ] About/version info modal (shows app name "Brainy", version string)
-- [ ] **Phase 1 "done looks like" verified**
+- [x] Keyboard shortcuts reference modal (placeholder content acceptable — finalize once real shortcuts exist)
+- [x] About/version info modal (shows app name "Brainy.ai", version string) — *(corrected from this checklist's own earlier "Brainy" to "Brainy.ai" — ADR-0062)*
+- [~] **Phase 1 "done looks like" verified** — backend and logic genuinely verified by direct exercise (see `testing.md`); two real gaps found and either fixed (BUG-002: app-load gate hung forever with no backend-unreachable message — fixed) or honestly left open (per-provider key-format validation — not built, noted in `testing.md` F-11). Full visual/interactive confirmation in a real browser is still owed — left for Istiyak to do once, see `testing.md`'s open `[ ]` items.
 
 **Depends on:** Phase 0 (DB, both processes running). **Chosen to come before canvas work specifically so Phase 4 never needs a workaround for credential storage (ADR-0041).**
 **Verify with:** `testing.md` Phase 1 section.
@@ -145,7 +147,7 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 1. **`boards`/`folders` CRUD routes** in `apps/server` first — Boards List is just a thin UI over these.
 2. **Boards List screen**, built against those routes, including the Trash view (soft-delete via `deleted_at` — no new table, just a filtered query).
 3. **Board Zustand store** — this is the high-frequency store (ADR-0012); design its update shape before writing canvas UI against it, since retrofitting a store's shape after components depend on it is expensive.
-4. **React Flow canvas mount** at `/brainboard/[id]`, initially with pan/zoom/select only — no node types yet.
+4. **React Flow canvas mount** at `/brainboards/[id]`, initially with pan/zoom/select only — no node types yet. Background: a subtle dot-grid pattern (small, evenly-spaced dots — not a blank page, not a line grid), the look Istiyak pointed to in Poppy.ai's canvas. Define it as new primitive tokens (dot size, spacing, color — likely a faint tint of `color.gray`) rather than a hardcoded value, consistent with the token-first rule (ADR-0024/ADR-0031); React Flow's own `<Background variant="dots">` is the natural fit for this, styled from those tokens.
 5. **Text node component**, the first real node type, built against the board store from step 3.
 6. **Autosave**: a debounced effect in the board store that writes node/edge changes back via a `nodes`/`edges` PATCH route — implement this *after* text nodes exist, so there's something real to autosave, rather than building the autosave mechanism against nothing.
 7. **File/document node and link/reference node components** (F-26, F-27 — ADR-0053), built right after text nodes since they're the same complexity class (static content, no AI/extraction wiring yet — that lands in Phase 4). File node upload handling and actual text/data extraction are two separate steps: get the node rendering with a stored file reference first, add the Node-native PDF/DOCX/XLSX parsing (into `extraction_cache`, keyed by content hash) as a following step — don't block the node's existence on extraction working yet.
@@ -163,7 +165,8 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 - [ ] Permanent delete from Trash (hard delete row + cascade its nodes/edges/messages)
 
 *TF-03 — Canvas navigation*
-- [ ] React Flow canvas mounted at `/brainboard/[id]`
+- [ ] React Flow canvas mounted at `/brainboards/[id]`
+- [ ] Canvas background renders a subtle dot-grid (small dots, token-driven spacing/color) — not a blank page; reference: Poppy.ai's canvas
 - [ ] Pan/zoom works smoothly
 - [ ] Single-node selection
 - [ ] Multi-node selection (marquee or shift-click)

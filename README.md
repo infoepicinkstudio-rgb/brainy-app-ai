@@ -1,4 +1,4 @@
-# Brainy
+# Brainy.ai
 
 A personal, local-only, infinite-canvas research and synthesis tool — a lean, purpose-built equivalent to [Poppy.ai](https://poppy.ai), built to run entirely on one machine at $0 ongoing cost.
 

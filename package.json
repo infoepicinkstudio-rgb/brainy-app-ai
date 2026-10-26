@@ -2,7 +2,7 @@
   "name": "brainy-app-ai",
   "private": true,
   "version": "0.0.0",
-  "description": "Brainy — Istiyak's personal, local-first infinite-canvas research/synthesis tool.",
+  "description": "Brainy.ai — Istiyak's personal, local-first infinite-canvas research/synthesis tool.",
   "workspaces": [
     "apps/*",
     "packages/*"

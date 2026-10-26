@@ -15,6 +15,10 @@ backups/
 .env.local
 .env.*.local
 
+# Local encryption key for provider_credentials.api_key (ADR-0060) — generated on first
+# server boot, unique per machine; never committed
+apps/server/.local-key
+
 # Build output
 packages/tokens/build/
 apps/web/.next/

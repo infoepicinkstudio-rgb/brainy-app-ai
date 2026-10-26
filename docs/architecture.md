@@ -142,9 +142,9 @@ React Flow renders the infinite canvas. Each node type (text, YouTube link, Inst
 
 ### 3.4 Routing
 
-`/brainboard/all` — the Boards List. `/brainboard/[id]` — an individual Brainboard's canvas. Base URL lives in environment config (`NEXT_PUBLIC_APP_URL` or equivalent), never hardcoded, so `localhost:3000` → `https://app.brainy.ai` (if ever hosted) is a config change only.
+`/brainboards/all` — the Boards List. `/brainboards/[id]` — an individual Brainboard's canvas. Plural, matching the `boards` table name and ADR-0020's locked pluralization convention. Base URL lives in environment config (`NEXT_PUBLIC_APP_URL` or equivalent), never hardcoded, so `localhost:3000` → `https://app.brainy.ai` (if ever hosted) is a config change only.
 
-*(ADR-0023)*
+*(ADR-0023, corrected to actually match ADR-0020 by ADR-0063)*
 
 ---
 
@@ -269,8 +269,9 @@ This table is a **starting point**, not a frozen schema — it is expected to gr
 - **CORS restricted to the frontend's own origin.** Binding to `localhost` does not by itself stop a malicious website the user visits in their browser from making a `fetch()` call to `localhost:4000` from within that page — the browser doesn't care that the target is "local," only the server's CORS policy decides who's allowed to call it. The Fastify backend must only accept cross-origin requests from `localhost:3000` (the frontend's own origin), never a wildcard `*`. Without this, provider API keys and board content would be readable by any page the user happens to have open. *(ADR-0049)*
 - **Subprocess input sanitization** for anything passed into `yt-dlp`/`ffmpeg` (pasted URLs) — **not yet designed in detail; owed as its own security pass before Phase 7.** *(ADR-0034 — open)*
 - **Public-repo hygiene**: the repo is structured so that publishable code (everything above) and Istiyak's own private research content (`brainy.db` itself, and anything in `provider_credentials`/`extraction_cache`/`chat_messages`) are cleanly separated by `.gitignore` — the database file is never committed, only the schema/migrations that define its shape.
+- **Provider API keys are encrypted at rest**, not just gitignored. `provider_credentials.api_key` is stored as AES-256-GCM ciphertext (random 12-byte IV per write, auth tag stored alongside), never plaintext. The 32-byte key lives in `apps/server/.local-key` — generated on first server boot if absent, read from there on every later boot, never logged, never returned from any API response, never sent to the frontend. *(ADR-0060)*
 
-*(ADR-0033, ADR-0034)*
+*(ADR-0033, ADR-0034, ADR-0060)*
 
 ---
 
