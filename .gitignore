@@ -10,6 +10,10 @@ brainy.db-shm
 # Local DB backups (tools/scripts/backup-db.mjs) — same sensitivity as brainy.db itself
 backups/
 
+# Uploaded file-node content (F-26, Phase 2) — real user data, same sensitivity tier as
+# brainy.db; content-addressed by sha256, never committed
+/uploads/
+
 # Secrets
 .env
 .env.local
