@@ -77,7 +77,7 @@ interface BoardState {
   loadBoard: (boardId: string) => Promise<void>;
   onNodesChange: (changes: NodeChange[]) => void;
   addTextNode: (position: { x: number; y: number }) => Promise<void>;
-  addLinkNode: (position: { x: number; y: number }) => Promise<void>;
+  addLinkNode: (position: { x: number; y: number }, prefill?: Partial<LinkNodeData>) => Promise<void>;
   addFileNode: (position: { x: number; y: number }, file: File) => Promise<void>;
   updateNodeData: (nodeId: string, data: Record<string, unknown>) => void;
   flushNodeData: (nodeId: string) => void;
@@ -144,10 +144,13 @@ export const useBoardStore = create<BoardState>((set, get) => ({
     set((state) => ({ nodes: [...state.nodes, toRfNode(node)] }));
   },
 
-  addLinkNode: async (position) => {
+  // `prefill` lets a caller (the canvas's paste-URL-to-create handler) seed the node's
+  // data in the SAME create call the "Link" toolbar button already uses, rather than
+  // creating an empty node and then issuing a second PATCH to fill it in.
+  addLinkNode: async (position, prefill) => {
     const { boardId } = get();
     if (!boardId) return;
-    const data: LinkNodeData = { url: "", title: "", notes: "" };
+    const data: LinkNodeData = { url: "", title: "", notes: "", ...prefill };
     const { node } = await api.post<{ node: ServerNode }>(`/api/boards/${boardId}/nodes`, {
       type: "link",
       position_x: position.x,
