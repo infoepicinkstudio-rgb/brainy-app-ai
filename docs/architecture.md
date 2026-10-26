@@ -204,7 +204,7 @@ When a chat node is invoked, the backend:
 
 ### 4.4 Lazy extraction pipeline
 
-YouTube/Instagram nodes store only a link + fetched thumbnail/title metadata at creation time — no transcript work happens yet. The first time a connected chat node actually needs that node's deep content:
+YouTube/Instagram nodes store only a link + fetched thumbnail/title metadata at creation time — no transcript work happens yet. The metadata/thumbnail half of that sentence (YouTube only, via the public oEmbed endpoint — no API key) was pulled forward and built in the node-card-overhaul pass (`apps/server/src/routes/link-preview.ts`, `GET /api/link-preview?url=`, ADR-0065), ahead of Phase 5 proper — it's a lightweight metadata fetch, not extraction, and everything below this paragraph (the actual yt-dlp/ffmpeg/Whisper pipeline) is still entirely unbuilt, still Phase 5, still blocked on §4.3's context-assembly module existing first. The first time a connected chat node actually needs that node's deep content:
 1. Backend checks `extraction_cache` for an existing entry keyed by source URL.
 2. If missing: runs `yt-dlp` to pull audio, `ffmpeg` to normalize it, then a Whisper transcription pass.
 3. Result is written to `extraction_cache` and used immediately — never re-run for the same source again.

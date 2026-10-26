@@ -29,6 +29,22 @@ function extOf(filename: string): string {
   return dot === -1 ? "" : filename.slice(dot + 1).toLowerCase();
 }
 
+export type FileKind = "pdf" | "docx" | "xlsx" | "image" | "other";
+
+// Round 2 (Istiyak: "File uploads should get type-specific visual treatment by file
+// type... Office's own color conventions, blue/green/red etc."). Detected by extension
+// at upload time, same moment extraction already classifies the file — the frontend
+// uses this purely for icon/accent-color choice (node-chrome.tsx's NodeAccent), never
+// for anything extraction-related.
+function fileKindOf(filename: string): FileKind {
+  const ext = extOf(filename);
+  if (ext === "pdf") return "pdf";
+  if (ext === "docx" || ext === "doc") return "docx";
+  if (ext === "xlsx" || ext === "xls") return "xlsx";
+  if (MIME_BY_EXT[ext]?.startsWith("image/")) return "image";
+  return "other";
+}
+
 export async function filesRoutes(app: FastifyInstance) {
   app.post("/api/files/upload", async (request, reply) => {
     const file = await request.file();
@@ -44,6 +60,7 @@ export async function filesRoutes(app: FastifyInstance) {
     const saved = await saveUpload(buffer, file.filename);
     const extraction = await extractForFile(buffer, file.filename, saved.contentHash);
     const isImage = isImageExtension(file.filename);
+    const fileKind = fileKindOf(file.filename);
 
     return {
       fileName: file.filename,
@@ -51,6 +68,7 @@ export async function filesRoutes(app: FastifyInstance) {
       contentHash: saved.contentHash,
       bytes: saved.bytes,
       isImage,
+      fileKind,
       extraction: {
         status: extraction.status,
         // The extracted text itself can be large — the node's `data` column doesn't

@@ -1,0 +1,1 @@
+ALTER TABLE `boards` ADD `is_favorite` integer DEFAULT false NOT NULL;

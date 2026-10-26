@@ -17,6 +17,11 @@ function isNodeType(value: string): value is NodeType {
 }
 
 interface CreateNodeBody {
+  // Optional, explicit id — ONLY used by the frontend's undo/redo stack (ADR-0066) to
+  // recreate a deleted/undone node with its original identity instead of a fresh random
+  // one. Omitted on every ordinary "add a node" call, which still gets a random UUID via
+  // the schema's $defaultFn, same as before.
+  id?: string;
   type?: string;
   position_x?: number;
   position_y?: number;
@@ -24,6 +29,10 @@ interface CreateNodeBody {
 }
 
 interface UpdateNodeBody {
+  // Node-card-overhaul slice (ADR-0065): a link node that resolves to a YouTube URL
+  // converts in place to a `video` node — this is the one case a PATCH legitimately
+  // changes a node's type, not just its position/data.
+  type?: string;
   position_x?: number;
   position_y?: number;
   data?: unknown;
@@ -44,13 +53,14 @@ export async function nodesRoutes(app: FastifyInstance) {
     "/api/boards/:boardId/nodes",
     async (request, reply) => {
       const { boardId } = request.params;
-      const { type, position_x, position_y, data } = request.body ?? {};
+      const { id, type, position_x, position_y, data } = request.body ?? {};
       if (!type || !isNodeType(type)) {
         return reply.code(400).send({ error: `Unknown node type "${type}".` });
       }
       const [created] = await db
         .insert(nodes)
         .values({
+          ...(id ? { id } : {}),
           board_id: boardId,
           type,
           position_x: position_x ?? 0,
@@ -77,8 +87,12 @@ export async function nodesRoutes(app: FastifyInstance) {
     "/api/boards/:boardId/nodes/:nodeId",
     async (request, reply) => {
       const { nodeId } = request.params;
-      const { position_x, position_y, data } = request.body ?? {};
+      const { type, position_x, position_y, data } = request.body ?? {};
+      if (type !== undefined && !isNodeType(type)) {
+        return reply.code(400).send({ error: `Unknown node type "${type}".` });
+      }
       const patch: Partial<typeof nodes.$inferInsert> = { updated_at: new Date().toISOString() };
+      if (type !== undefined) patch.type = type;
       if (position_x !== undefined) patch.position_x = position_x;
       if (position_y !== undefined) patch.position_y = position_y;
       if (data !== undefined) patch.data = data;

@@ -13,12 +13,19 @@ export interface FolderSummary {
   name: string;
 }
 
+// Folder-delete strategy (ADR-0082): "move" reassigns the folder's boards to another
+// folder (or null = top level); "delete" sends them all to Trash instead. Mirrors the
+// backend's DeleteFolderBody shape in apps/server/src/routes/boards.ts.
+export type FolderDeleteAction = "move" | "delete";
+
 interface FoldersState {
   folders: FolderSummary[];
   loaded: boolean;
   loadError: string | null;
   loadFolders: () => Promise<void>;
   createFolder: (name: string) => Promise<void>;
+  renameFolder: (id: string, name: string) => Promise<void>;
+  deleteFolder: (id: string, action: FolderDeleteAction, targetFolderId?: string | null) => Promise<void>;
 }
 
 export const useFoldersStore = create<FoldersState>((set) => ({
@@ -38,5 +45,20 @@ export const useFoldersStore = create<FoldersState>((set) => ({
   createFolder: async (name: string) => {
     const { folder } = await api.post<{ folder: FolderSummary }>("/api/folders", { name });
     set((state) => ({ folders: [...state.folders, folder] }));
+  },
+
+  renameFolder: async (id: string, name: string) => {
+    const { folder } = await api.patch<{ folder: FolderSummary }>(`/api/folders/${id}`, { name });
+    set((state) => ({ folders: state.folders.map((f) => (f.id === id ? folder : f)) }));
+  },
+
+  // Boards affected by the chosen strategy (moved or trashed) aren't this store's
+  // concern — it only owns the folders list. Callers that also show a boards list
+  // (Boards List / Trash pages) bump useBoardsRefreshStore separately so their own
+  // fetch effect re-runs; see boards-refresh-store.ts for why that's a tiny dedicated
+  // store rather than lifting the whole boards list in here too.
+  deleteFolder: async (id: string, action: FolderDeleteAction, targetFolderId?: string | null) => {
+    await api.delete(`/api/folders/${id}`, { action, target_folder_id: targetFolderId ?? null });
+    set((state) => ({ folders: state.folders.filter((f) => f.id !== id) }));
   },
 }));

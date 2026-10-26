@@ -8,8 +8,11 @@
       "accent":    { "$value": "{color.accent.600}", "$type": "color" },
       "accentMuted": { "$value": "{color.accent.50}", "$type": "color" },
       "danger":    { "$value": "{color.danger.600}", "$type": "color" },
-      "canvas":    { "$value": "{color.white}",   "$type": "color" },
-      "canvasDot": { "$value": "{color.gray.200}", "$type": "color" }
+      "dangerMuted": { "$value": "{color.danger.50}", "$type": "color" },
+      "infoMuted": { "$value": "{color.info.50}", "$type": "color" },
+      "successMuted": { "$value": "{color.success.50}", "$type": "color" },
+      "canvas":    { "$value": "{color.accent.50}", "$type": "color" },
+      "canvasDot": { "$value": "{color.gray.400}", "$type": "color" }
     },
     "text": {
       "primary":   { "$value": "{color.gray.900}", "$type": "color" },
@@ -18,14 +21,42 @@
       "onAccent":  { "$value": "{color.white}",    "$type": "color" },
       "accent":    { "$value": "{color.accent.600}", "$type": "color" },
       "danger":    { "$value": "{color.danger.600}", "$type": "color" },
-      "success":   { "$value": "{color.success.600}", "$type": "color" }
+      "success":   { "$value": "{color.success.600}", "$type": "color" },
+      "info":      { "$value": "{color.info.600}", "$type": "color" },
+      "warning":   { "$value": "{color.warning.600}", "$type": "color" }
     },
     "border": {
       "default": { "$value": "{color.gray.200}",   "$type": "color" },
       "muted":   { "$value": "{color.gray.100}",   "$type": "color" },
       "focus":   { "$value": "{color.accent.500}", "$type": "color" },
       "danger":  { "$value": "{color.danger.500}", "$type": "color" },
-      "success": { "$value": "{color.success.500}", "$type": "color" }
+      "success": { "$value": "{color.success.500}", "$type": "color" },
+      "dangerMuted": { "$value": "{color.danger.200}", "$type": "color" },
+      "infoMuted": { "$value": "{color.info.200}", "$type": "color" }
+    },
+    "ribbonBg": {
+      "neutral": { "$value": "{color.gray.200}",   "$type": "color" },
+      "info":    { "$value": "{color.info.100}",   "$type": "color" },
+      "danger":  { "$value": "{color.danger.100}", "$type": "color" },
+      "success": { "$value": "{color.success.100}","$type": "color" },
+      "warning": { "$value": "{color.warning.100}","$type": "color" },
+      "accent":  { "$value": "{color.accent.100}", "$type": "color" }
+    },
+    "ribbonFg": {
+      "neutral": { "$value": "{color.gray.700}",   "$type": "color" },
+      "info":    { "$value": "{color.info.700}",   "$type": "color" },
+      "danger":  { "$value": "{color.danger.700}", "$type": "color" },
+      "success": { "$value": "{color.success.700}","$type": "color" },
+      "warning": { "$value": "{color.warning.700}","$type": "color" },
+      "accent":  { "$value": "{color.accent.700}", "$type": "color" }
+    },
+    "ribbonSolid": {
+      "neutral": { "$value": "{color.gray.600}",   "$type": "color" },
+      "info":    { "$value": "{color.info.600}",   "$type": "color" },
+      "danger":  { "$value": "{color.danger.600}", "$type": "color" },
+      "success": { "$value": "{color.success.600}","$type": "color" },
+      "warning": { "$value": "{color.warning.600}","$type": "color" },
+      "accent":  { "$value": "{color.accent.600}", "$type": "color" }
     }
   },
   "shadow": {

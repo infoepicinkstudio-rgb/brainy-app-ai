@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { BoardCard, type BoardSummary } from "@/components/boards/board-card";
 import { NamePromptDialog } from "@/components/boards/name-prompt-dialog";
 import { useFoldersStore } from "@/stores/folders-store";
+import { useBoardsRefreshStore } from "@/stores/boards-refresh-store";
 
 export default function BoardsListPage() {
   // useSearchParams() (for the active ?folder= filter) needs a Suspense boundary
@@ -31,6 +32,7 @@ function BoardsListContent() {
 
   const folders = useFoldersStore((state) => state.folders);
   const loadFolders = useFoldersStore((state) => state.loadFolders);
+  const boardsRefreshToken = useBoardsRefreshStore((state) => state.token);
 
   const [boards, setBoards] = React.useState<BoardSummary[] | null>(null);
   const [loadError, setLoadError] = React.useState<string | null>(null);
@@ -68,7 +70,10 @@ function BoardsListContent() {
     return () => {
       ignore = true;
     };
-  }, [reloadToken]);
+    // boardsRefreshToken: a folder delete in the sidebar (move-or-trash its boards,
+    // boards-refresh-store.ts) happens outside this page's own state entirely, so this
+    // effect needs to re-run on that signal too, not just this page's local reloadToken.
+  }, [reloadToken, boardsRefreshToken]);
 
   async function handleCreateBoard(title: string) {
     const { board } = await api.post<{ board: BoardSummary }>("/api/boards", {
@@ -92,6 +97,11 @@ function BoardsListContent() {
   async function handleDeleteBoard(boardId: string) {
     setBoards((prev) => prev?.filter((b) => b.id !== boardId) ?? prev);
     await api.post(`/api/boards/${boardId}/trash`);
+  }
+
+  async function handleToggleFavorite(boardId: string, nextValue: boolean) {
+    setBoards((prev) => prev?.map((b) => (b.id === boardId ? { ...b, is_favorite: nextValue } : b)) ?? prev);
+    await api.patch(`/api/boards/${boardId}`, { is_favorite: nextValue });
   }
 
   if (loadError) {
@@ -122,19 +132,14 @@ function BoardsListContent() {
       <div className="mx-auto w-full max-w-3xl">
         <div className="flex items-center justify-between">
           <div>
+            {/* The old "Show all boards" button here duplicated the sidebar's own "All
+                Boards" nav link one click away — same redundancy trash/page.tsx's
+                comment already called out for its old "Back to boards" link, and the
+                same fix applies: remove it rather than polish an interaction that
+                doesn't need to exist (Istiyak: "I think we don't need it"). */}
             <h1 className="text-2xl font-semibold tracking-tight text-text-primary">
               {activeFolder ? activeFolder.name : "Your boards"}
             </h1>
-            {activeFolder ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="mt-1 -ml-3 h-7 px-3 text-text-secondary"
-                onClick={() => router.push("/brainboards/all")}
-              >
-                Show all boards
-              </Button>
-            ) : null}
           </div>
           <Button size="sm" onClick={() => setNewBoardOpen(true)}>
             <Plus className="size-3.5" aria-hidden="true" />
@@ -161,14 +166,17 @@ function BoardsListContent() {
           </p>
         ) : (
           <div className="mt-6 flex flex-col divide-y divide-border-muted rounded-lg border border-border-default bg-background-surface">
-            {visibleBoards.map((board) => (
+            {visibleBoards.map((board, index) => (
               <BoardCard
                 key={board.id}
                 board={board}
                 folders={folders}
+                roundedTop={index === 0}
+                roundedBottom={index === visibleBoards.length - 1}
                 onRename={() => setRenamingBoard(board)}
                 onMoveToFolder={(folderId) => handleMoveToFolder(board.id, folderId)}
                 onDelete={() => handleDeleteBoard(board.id)}
+                onToggleFavorite={() => handleToggleFavorite(board.id, !board.is_favorite)}
               />
             ))}
           </div>

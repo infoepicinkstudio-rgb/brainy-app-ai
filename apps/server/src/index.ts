@@ -10,6 +10,7 @@ import { brandProfileRoutes } from "./routes/brand-profile.js";
 import { boardsRoutes } from "./routes/boards.js";
 import { nodesRoutes } from "./routes/nodes.js";
 import { filesRoutes } from "./routes/files.js";
+import { linkPreviewRoutes } from "./routes/link-preview.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "http://localhost:3000";
@@ -65,6 +66,10 @@ await app.register(brandProfileRoutes);
 await app.register(boardsRoutes);
 await app.register(nodesRoutes);
 await app.register(filesRoutes);
+
+// Node-card-overhaul slice (ADR-0065) — Phase 5's metadata/thumbnail fetch pulled
+// forward; see link-preview.ts's own header comment for exact scope.
+await app.register(linkPreviewRoutes);
 
 try {
   await app.listen({ port: PORT, host: "localhost" });

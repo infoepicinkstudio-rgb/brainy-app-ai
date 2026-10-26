@@ -15,11 +15,23 @@ interface CreateBoardBody {
 interface UpdateBoardBody {
   title?: string;
   folder_id?: string | null;
+  is_favorite?: boolean;
 }
 
 interface FolderBody {
   name?: string;
   parent_folder_id?: string | null;
+}
+
+// Strategy for what happens to a folder's boards when the folder itself is deleted
+// (ADR-0082). "move" (the default — matches the pre-existing, already-tested behavior)
+// reassigns every board in the folder to `target_folder_id` (null = top level, same as
+// before this round). "delete" sends every board in the folder to Trash (soft-delete,
+// consistent with how board deletion works everywhere else in this app — never a hard
+// delete from this flow) instead of relocating them.
+interface DeleteFolderBody {
+  action?: "move" | "delete";
+  target_folder_id?: string | null;
 }
 
 export async function boardsRoutes(app: FastifyInstance) {
@@ -59,14 +71,42 @@ export async function boardsRoutes(app: FastifyInstance) {
     return { folder: updated };
   });
 
-  // Deleting a folder never deletes the boards inside it — they return to top level
-  // (testing.md F-04: "leaves the board intact at top level").
-  app.delete<{ Params: { id: string } }>("/api/folders/:id", async (request, reply) => {
-    const { id } = request.params;
-    await db.update(boards).set({ folder_id: null }).where(eq(boards.folder_id, id));
-    await db.delete(folders).where(eq(folders.id, id));
-    return reply.code(204).send();
-  });
+  // What happens to a folder's boards on delete is now a real, explicit choice
+  // (ADR-0082) rather than always silently orphaning them to top level. Default stays
+  // "move" to null (top level) when no body is sent at all, preserving the exact
+  // pre-existing behavior testing.md F-04 already covers for any caller that doesn't
+  // opt into the new body shape.
+  app.delete<{ Params: { id: string }; Body: DeleteFolderBody | undefined }>(
+    "/api/folders/:id",
+    async (request, reply) => {
+      const { id } = request.params;
+      const action = request.body?.action ?? "move";
+
+      if (action === "delete") {
+        // Soft-delete every board in this folder — same `deleted_at` mechanism as the
+        // single-board "Move to Trash" action, never a hard delete. `folder_id` is also
+        // cleared here (BUG-025): `boards.folder_id` is a real FK against `folders.id`,
+        // so leaving it pointing at the folder this request is about to delete below
+        // violates that constraint the moment the DELETE on `folders` runs, even though
+        // the board itself is only soft-deleted, not gone. A trashed board no longer
+        // meaningfully "belongs" to a folder at all, so null is the right value here,
+        // not just the FK-safe one.
+        await db
+          .update(boards)
+          .set({ deleted_at: new Date().toISOString(), folder_id: null, updated_at: new Date().toISOString() })
+          .where(eq(boards.folder_id, id));
+      } else {
+        const targetFolderId = request.body?.target_folder_id ?? null;
+        await db
+          .update(boards)
+          .set({ folder_id: targetFolderId, updated_at: new Date().toISOString() })
+          .where(eq(boards.folder_id, id));
+      }
+
+      await db.delete(folders).where(eq(folders.id, id));
+      return reply.code(204).send();
+    }
+  );
 
   // --- Boards ------------------------------------------------------------------
 
@@ -105,6 +145,9 @@ export async function boardsRoutes(app: FastifyInstance) {
     }
     if (request.body?.folder_id !== undefined) {
       patch.folder_id = request.body.folder_id;
+    }
+    if (request.body?.is_favorite !== undefined) {
+      patch.is_favorite = request.body.is_favorite;
     }
     await db.update(boards).set(patch).where(eq(boards.id, id));
     const [updated] = await db.select().from(boards).where(eq(boards.id, id));
