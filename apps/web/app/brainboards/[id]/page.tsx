@@ -19,14 +19,16 @@ import {
   type IsValidConnection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Type, Link2, FileUp, Undo2, Redo2, Plus, Minus, Maximize2 } from "lucide-react";
-import { useBoardStore, RF_GROUP_TYPE } from "@/stores/board-store";
+import { Type, Link2, FileUp, Bot, Cpu, Gem, Undo2, Redo2, Plus, Minus, Maximize2 } from "lucide-react";
+import { useBoardStore, RF_GROUP_TYPE, type ChatNodeData } from "@/stores/board-store";
 import { useToastStore } from "@/stores/toast-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { TextNode } from "@/components/canvas/text-node";
 import { FileNode } from "@/components/canvas/file-node";
 import { LinkNode } from "@/components/canvas/link-node";
 import { VideoNode } from "@/components/canvas/video-node";
 import { GroupNode } from "@/components/canvas/group-node";
+import { ChatNode } from "@/components/canvas/chat-node";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { Button } from "@/components/ui/button";
 import { ToastHost } from "@/components/ui/toast-host";
@@ -39,8 +41,19 @@ const nodeTypes: NodeTypes = {
   file: FileNode,
   link: LinkNode,
   video: VideoNode,
+  chat: ChatNode,
   [RF_GROUP_TYPE]: GroupNode,
 };
+
+// Phase 4 — one toolbar button per provider's chat node. Icon/label duplicated from
+// chat-node.tsx's own PROVIDER_ICONS/PROVIDER_LABELS rather than imported — these are
+// two different UI surfaces (a toolbar glyph vs. a card header) that happen to agree
+// today, not one shared concept that must always stay in lockstep.
+const CHAT_PROVIDERS: Array<{ provider: ChatNodeData["provider"]; label: string; icon: React.ElementType }> = [
+  { provider: "claude", label: "Add Claude chat", icon: Bot },
+  { provider: "openai", label: "Add OpenAI chat", icon: Cpu },
+  { provider: "gemini", label: "Add Gemini chat", icon: Gem },
+];
 
 // Grouping (Phase 3) — padding around the selected members' combined bounding box when
 // Ctrl+G computes a new group's frame (handleGroupShortcut below). Purely cosmetic
@@ -113,6 +126,7 @@ function CanvasShell({ boardId }: { boardId: string }) {
     addTextNode,
     addLinkNode,
     addFileNode,
+    addChatNode,
     addVideoNodeFromUrl,
     groupSelectedNodes,
     ungroupNode,
@@ -127,6 +141,18 @@ function CanvasShell({ boardId }: { boardId: string }) {
   const canRedo = useBoardStore((state) => state.future.length > 0);
   const { screenToFlowPosition, zoomIn, zoomOut, fitView, getNodes } = useReactFlow();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Phase 4 — gates the three chat-provider toolbar buttons below by the same
+  // `isConfigured()` the backend itself checks at send time (chat.ts), so a button
+  // is never clickable here only to have the very first send fail for lack of a key.
+  // Settings is the only other place this loads today, so a board opened directly
+  // (no prior Settings visit this session) needs its own load, same pattern as there.
+  const providers = useSettingsStore((state) => state.providers);
+  const providersLoaded = useSettingsStore((state) => state.providersLoaded);
+  const loadProviders = useSettingsStore((state) => state.loadProviders);
+  React.useEffect(() => {
+    if (!providersLoaded) loadProviders();
+  }, [providersLoaded, loadProviders]);
   // error-handling-conventions.md: data-mutating actions disable their control for the
   // duration of the in-flight request — a file upload (saves a file + creates a node)
   // qualifies, and without this a second click while one upload is still running could
@@ -497,6 +523,33 @@ function CanvasShell({ boardId }: { boardId: string }) {
             disabled: isUploading,
             busy: isUploading,
           },
+          ...CHAT_PROVIDERS.map(({ provider, label, icon }) => {
+            const status = providers.find((p) => p.provider === provider);
+            const isConfigured = Boolean(status?.isConfigured);
+            // Istiyak (Phase 4 follow-up): a key is only required for Native API — Local
+            // LLM and Manual Input need no key at all (F-12: "Local LLM — no key
+            // needed"), so gating EVERY provider's placement on isConfigured blocked
+            // exactly the workflow those two modes exist for. A newly placed node is
+            // seeded from this provider's Settings "Default execution mode"
+            // (board-store.ts's addChatNode) — so if that default is already Local LLM
+            // or Manual Input, the node needs no key to be usable the moment it lands,
+            // and placement is allowed on that basis alone. Only when the default is
+            // still Native API (the out-of-the-box default) and no key is saved does
+            // placing the node lead nowhere, so that's the only case still blocked.
+            const startsKeyless = status?.executionMode === "local" || status?.executionMode === "manual";
+            const canPlace = isConfigured || startsKeyless;
+            return {
+              key: `chat-${provider}`,
+              icon,
+              onClick: () => addChatNode(centerPosition(), provider),
+              disabled: !providersLoaded || !canPlace,
+              label: !providersLoaded
+                ? label
+                : canPlace
+                  ? label
+                  : `${label} — add a key, or set its default mode to Local LLM/Manual Input in Settings`,
+            };
+          }),
         ]}
       />
       <input

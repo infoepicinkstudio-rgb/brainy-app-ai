@@ -95,20 +95,50 @@ export const edges = sqliteTable("edges", {
 });
 
 /**
- * Message history for a chat node. model/tokens_used/estimated_cost support
- * per-node model selection (F-12) and estimated cost tracking (F-29) — ADR-0052.
+ * One conversation thread within a chat node (Phase 4 follow-up, Istiyak: "New session
+ * and session list side panel needed" — matching the multi-conversation pattern of
+ * mainstream AI chat UIs). A single chat node can hold many of these; the canvas
+ * connection/context-assembly story (architecture.md §4.3) is entirely unaffected —
+ * connections are still node-to-node, sessions are purely an organizational split of
+ * ONE node's own message history. `title` is null until the session's first user
+ * message arrives, then auto-derived from it (routes/chat.ts) — never user-renamed in
+ * this pass, matching F-12's own "a sane default is pre-selected" spirit rather than
+ * adding a rename flow nothing asked for yet.
+ */
+export const chat_sessions = sqliteTable("chat_sessions", {
+  id: id(),
+  node_id: text("node_id")
+    .notNull()
+    .references(() => nodes.id),
+  title: text("title"),
+  ...timestamps,
+});
+
+/**
+ * Message history for a chat node, split across `chat_sessions` (above).
+ * model/tokens_used/estimated_cost support per-node model selection (F-12) and
+ * estimated cost tracking (F-29) — ADR-0052. `session_id` nullable rather than
+ * NOT NULL: any row saved before this column existed has no session to point at;
+ * routes/chat.ts's chat-history read groups those orphaned rows into a synthesized
+ * "Legacy conversation" per node rather than losing them, so this stays nullable
+ * instead of forcing a destructive backfill. `attachments` (Istiyak: "Image upload in
+ * chat") holds a JSON array of `{storedName, mimeType, originalName}` — the same
+ * content-addressed storage lib/uploads.ts already uses for file-node uploads, not a
+ * second upload mechanism; null/empty for every message with no image.
  */
 export const chat_messages = sqliteTable("chat_messages", {
   id: id(),
   node_id: text("node_id")
     .notNull()
     .references(() => nodes.id),
+  session_id: text("session_id").references(() => chat_sessions.id),
   role: text("role").notNull(), // "user" | "assistant"
   content: text("content").notNull(),
   provider: text("provider"), // "claude" | "openai" | "gemini" | null (Local LLM / Manual Input)
   model: text("model"),
   tokens_used: integer("tokens_used"),
   estimated_cost: real("estimated_cost"),
+  attachments: text("attachments", { mode: "json" }),
   ...timestamps,
 });
 

@@ -409,25 +409,34 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 **Build checklist:**
 
 *TF-07 — Configure chat node*
-- [ ] `ProviderAdapter` interface defined; Claude implementation real (incl. `listModels()`), OpenAI/Gemini stubs present and satisfy the interface
-- [ ] Real tools panel component (replaces Phase 1 stub), Claude enabled/disabled per `isConfigured()`
-- [ ] Claude chat node type component, placeable on canvas from the tools panel
-- [ ] Per-node execution-mode selector UI — MVP only requires **Native API** to function; Local LLM/Manual Input visible but may be inert (say so plainly if selected)
-- [ ] Per-node model selector UI (F-12, ADR-0052) — independent of execution mode, defaults to a sane model, never blocks node placement on a choice
+- [x] `ProviderAdapter` interface defined; Claude implementation real (incl. `listModels()`), OpenAI/Gemini stubs present and satisfy the interface
+- [x] Real tools panel component (replaces Phase 1 stub), Claude enabled/disabled per `isConfigured()`
+- [x] Claude chat node type component, placeable on canvas from the tools panel
+- [x] Per-node execution-mode selector UI — MVP only requires **Native API** to function; Local LLM/Manual Input visible but may be inert (say so plainly if selected)
+- [x] Per-node model selector UI (F-12, ADR-0052) — independent of execution mode, defaults to a sane model, never blocks node placement on a choice
 
 *TF-08 — Chat synthesis*
-- [ ] SSE route on backend for chat streaming, tested against a hardcoded prompt first
-- [ ] Frontend SSE client consuming the stream, rendering tokens as they arrive
-- [ ] Context-assembly module: resolve connected text, file, and link nodes' content into the prompt (video nodes deferred to Phase 5)
-- [ ] `chat_messages` persistence (both user prompt and streamed response saved), including `model`/`tokens_used`/`estimated_cost` for Native API calls
-- [ ] Per-node "notes for AI" field exists on the node and is included in context assembly
-- [ ] Error/stuck state UI (what the user sees if the API call fails or hangs) + retry action that re-sends without requiring the prompt to be retyped
-- [ ] Brand/Voice Profile opt-in per chat node, included in context assembly when opted in
-- [ ] Estimated cost running-total view in Settings (F-29), summing Native API usage per provider — explicitly labeled as an estimate
-- [ ] **Phase 4 "done looks like" verified** — a real connected-node-aware streamed response confirmed, using the model chosen on that specific node
+- [ ] SSE route on backend for chat streaming, tested against a hardcoded prompt first — *built, never executed against a live connection; blocked on a funded API key (see Status below)*
+- [ ] Frontend SSE client consuming the stream, rendering tokens as they arrive — *built, same blocker*
+- [x] Context-assembly module: resolve connected text, file, and link nodes' content into the prompt (video nodes deferred to Phase 5)
+- [x] `chat_messages` persistence (both user prompt and streamed response saved), including `model`/`tokens_used`/`estimated_cost` for Native API calls
+- [x] Per-node "notes for AI" field exists on the node and is included in context assembly
+- [x] Error/stuck state UI (what the user sees if the API call fails or hangs) + retry action that re-sends without requiring the prompt to be retyped — *the "no key saved" error path is exercisable today, at zero cost, by sending with no key configured; the mid-stream-failure path still needs a live call*
+- [x] Brand/Voice Profile opt-in per chat node, included in context assembly when opted in
+- [x] Estimated cost running-total view in Settings (F-29), summing Native API usage per provider — explicitly labeled as an estimate
+- [ ] **Phase 4 "done looks like" verified** — a real connected-node-aware streamed response confirmed, using the model chosen on that specific node — **BLOCKED, open**
 
 **Depends on:** Phase 1 (API-key storage), Phase 3 (edges — context assembly reads connections).
 **Verify with:** `testing.md` Phase 4 section.
+
+**Status (2026-10-28):** build closed — every item that can be verified without spending
+API tokens is done and `tsc --noEmit` is clean on both apps. The two items above left
+open are deliberately left open, not forgotten: neither can be truthfully checked off
+without an actual streamed response, and that requires a funded Anthropic API key,
+which doesn't exist in this build environment. Live-verify those two, then re-run
+`testing.md`'s Phase 4 section (F-12/F-13/F-29/F-16/F-20/F-21), before calling this
+phase fully done. Full handoff notes: `claude/phase-4-status.md` in the Brainy.ai
+Project.
 
 ---
 

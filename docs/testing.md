@@ -297,6 +297,16 @@ Legend: `[ ]` not yet run · `[x]` passes · `[~]` partially implemented/adjuste
 
 ## Phase 4 — First chat node
 
+> **Status (2026-10-28):** build closed, live verification pending a funded Anthropic
+> API key — see `implementation_plan.md`'s Phase 4 "Status" note and
+> `claude/phase-4-status.md` in the Brainy.ai Project for the full breakdown. Testable
+> today, at zero cost: F-12 in full (none of its checks send a message), F-29's "no
+> key saved" case is really just its "Local LLM or Manual Input" case in disguise
+> (both skip the API, so both should leave the running total untouched), and F-20 via
+> sending with no key configured (exercises the error+retry UI, though not the exact
+> mid-stream-failure path a live key would). Everything else below needs a real
+> response from Claude.
+
 **F-12 — Chat node placement, execution mode & model selection**
 - [ ] Unconfigured provider's node type is greyed out in the tools panel
 - [ ] Changing one chat node's execution mode doesn't affect any other chat node on the same board

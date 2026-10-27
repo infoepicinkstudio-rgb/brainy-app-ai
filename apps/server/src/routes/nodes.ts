@@ -9,7 +9,7 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, or } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { nodes, edges, chat_messages } from "../db/schema.js";
+import { nodes, edges, chat_messages, chat_sessions } from "../db/schema.js";
 
 const NODE_TYPES = ["text", "video", "file", "link", "chat", "mindmap", "group"] as const;
 type NodeType = (typeof NODE_TYPES)[number];
@@ -205,7 +205,10 @@ export async function nodesRoutes(app: FastifyInstance) {
         .update(nodes)
         .set({ parent_node_id: null, updated_at: new Date().toISOString() })
         .where(eq(nodes.parent_node_id, nodeId));
+      // Messages before sessions — chat_messages.session_id references chat_sessions.id,
+      // so a session can't be removed first without first clearing what points at it.
       await db.delete(chat_messages).where(eq(chat_messages.node_id, nodeId));
+      await db.delete(chat_sessions).where(eq(chat_sessions.node_id, nodeId));
       await db.delete(nodes).where(eq(nodes.id, nodeId));
       return reply.code(204).send();
     }

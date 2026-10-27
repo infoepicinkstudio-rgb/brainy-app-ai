@@ -30,8 +30,9 @@ import { applyNodeChanges, applyEdgeChanges } from "@xyflow/react";
 import { api, uploadFile } from "@/lib/api";
 import { parseVideoUrl } from "@/lib/video-platform";
 import { useToastStore } from "@/stores/toast-store";
+import { useSettingsStore } from "@/stores/settings-store";
 
-export type BrainyNodeType = "text" | "file" | "link" | "video";
+export type BrainyNodeType = "text" | "file" | "link" | "video" | "chat";
 
 // Phase 3 bug-fix round (Istiyak: "IF file type doesn't supported then it should not
 // have come to board... mp3 mp4 html certain files not supported yet"). Before this,
@@ -162,6 +163,28 @@ export interface GroupNodeData extends Record<string, unknown> {
   label: string;
   cardWidth: number;
   cardHeight: number;
+}
+
+// Phase 4 — first chat node (architecture.md §4.2, TF-07). `provider` picks which
+// adapter this node calls (ADR-0018 — a distinct provider per node, never a dropdown
+// that reconfigures the same node); `model` and `executionMode` are both independently
+// per-node settings (ADR-0019/ADR-0052) — two different nodes on the same board, even
+// same provider, can run different models or different execution modes without
+// affecting each other. `messages` is NOT stored here — chat_messages is the source of
+// truth server-side (chat.ts), fetched once on mount and appended to as the SSE stream
+// comes in; keeping it out of `data` avoids a second, divergent copy of the same
+// history living in two places.
+export interface ChatNodeData extends Record<string, unknown> {
+  provider: "claude" | "openai" | "gemini";
+  model: string;
+  executionMode: "local" | "native" | "manual";
+  /** Per-node free-text instruction (F-16) — included in context assembly alongside
+   * whatever's connected, never a replacement for it. */
+  notesForAI: string;
+  /** Brand/Voice Profile opt-in (F-21) — per-node, never applied globally/invisibly. */
+  useBrandProfile: boolean;
+  cardWidth?: number;
+  cardHeight?: number;
 }
 
 interface ServerNode {
@@ -330,6 +353,10 @@ interface BoardState {
   addTextNode: (position: { x: number; y: number }, content?: string) => Promise<void>;
   addLinkNode: (position: { x: number; y: number }, prefill?: Partial<LinkNodeData>) => Promise<void>;
   addFileNode: (position: { x: number; y: number }, file: File) => Promise<void>;
+  /** Places a chat node for the given provider, pre-selecting that provider's default
+   * model (F-12: "never requires a choice before it's usable") — same toolbar-click
+   * pattern as addTextNode/addLinkNode. */
+  addChatNode: (position: { x: number; y: number }, provider: ChatNodeData["provider"]) => Promise<void>;
   /** Returns true if `url` was recognized as a YouTube/Vimeo link and a video node was created. */
   addVideoNodeFromUrl: (position: { x: number; y: number }, url: string) => Promise<boolean>;
   /** Converts an existing `link` node in place once its URL field resolves to a video platform. */
@@ -1249,6 +1276,59 @@ export const useBoardStore = create<BoardState>((set, get) => {
       // A prefilled URL (paste-to-create) has no "blur" moment to trigger the fetch
       // from, so it's kicked off here directly instead.
       if (data.url) refreshLinkMetadata(rfNode.id, data.url);
+    },
+
+    // Mirrors each provider's own backend default-model tier (apps/server/src/
+    // providers/claude.ts etc.) — duplicated rather than fetched, same reasoning as
+    // SUPPORTED_FILE_EXTENSIONS above: small, static, and needed synchronously before
+    // any network call so a freshly placed node never shows a blank model selector.
+    addChatNode: async (position, provider) => {
+      const { boardId } = get();
+      if (!boardId) return;
+      const DEFAULT_MODEL: Record<ChatNodeData["provider"], string> = {
+        claude: "claude-sonnet-5-5",
+        openai: "gpt-5",
+        gemini: "gemini-3-pro",
+      };
+      // Execution mode has two homes by design (ADR-0019/F-12): Settings'
+      // provider_credentials.execution_mode is the DEFAULT a newly placed node of
+      // that provider starts with; ChatNodeData.executionMode is the per-node value
+      // chat.ts actually reads at send time, independently changeable afterwards
+      // without touching any other node. We seed from the Settings default here so
+      // the two stay in sync at placement time, falling back to "native" (the only
+      // mode Phase 4 makes functional) if providers haven't loaded yet.
+      const providerStatus = useSettingsStore.getState().providers.find((p) => p.provider === provider);
+      const data: ChatNodeData = {
+        provider,
+        model: DEFAULT_MODEL[provider],
+        executionMode: providerStatus?.executionMode ?? "native",
+        notesForAI: "",
+        useBrandProfile: false,
+        // NodeChrome's own un-resized default (w-56/224px, auto height) fits a short
+        // text snippet, not a message thread plus its own model/mode controls — unlike
+        // every other node type, a chat node is useless at that size before the user
+        // ever touches the resize handle, so it gets its own larger explicit starting
+        // size instead of inheriting the shared default.
+        //
+        // Visual-match pass (Istiyak: "make a Chat card bigger in size to fit all in
+        // context"): bumped again from 340×420 — that size was only ever enough for the
+        // message thread + composer; it had no room for the reference layout's own
+        // persistent sessions column (chat-node.tsx) alongside the thread, the session
+        // title bar, and the model-picker/quick-actions row under the composer all at
+        // once without tight scrolling. 620×680 fits all of that comfortably while still
+        // being well within NodeChrome's resize range in either direction.
+        cardWidth: 620,
+        cardHeight: 680,
+      };
+      const { node } = await api.post<{ node: ServerNode }>(`/api/boards/${boardId}/nodes`, {
+        type: "chat",
+        position_x: position.x,
+        position_y: position.y,
+        data,
+      });
+      const rfNode = toRfNode(node);
+      set((state) => ({ nodes: [...state.nodes, rfNode] }));
+      pushHistory({ kind: "create", node: rfNode });
     },
 
     addFileNode: async (position, file: File) => {

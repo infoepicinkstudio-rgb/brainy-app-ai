@@ -11,6 +11,7 @@ import { boardsRoutes } from "./routes/boards.js";
 import { nodesRoutes } from "./routes/nodes.js";
 import { filesRoutes } from "./routes/files.js";
 import { linkPreviewRoutes } from "./routes/link-preview.js";
+import { chatRoutes } from "./routes/chat.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "http://localhost:3000";
@@ -70,6 +71,9 @@ await app.register(filesRoutes);
 // Node-card-overhaul slice (ADR-0065) — Phase 5's metadata/thumbnail fetch pulled
 // forward; see link-preview.ts's own header comment for exact scope.
 await app.register(linkPreviewRoutes);
+
+// Phase 4 — First chat node (architecture.md §4.2/§4.3, TF-07/TF-08).
+await app.register(chatRoutes);
 
 try {
   await app.listen({ port: PORT, host: "localhost" });
