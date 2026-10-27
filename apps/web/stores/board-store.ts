@@ -25,12 +25,49 @@
 // directly.
 
 import { create } from "zustand";
-import type { Node, Edge, NodeChange } from "@xyflow/react";
-import { applyNodeChanges } from "@xyflow/react";
+import type { Node, Edge, NodeChange, EdgeChange, Connection } from "@xyflow/react";
+import { applyNodeChanges, applyEdgeChanges } from "@xyflow/react";
 import { api, uploadFile } from "@/lib/api";
 import { parseVideoUrl } from "@/lib/video-platform";
+import { useToastStore } from "@/stores/toast-store";
 
 export type BrainyNodeType = "text" | "file" | "link" | "video";
+
+// Phase 3 bug-fix round (Istiyak: "IF file type doesn't supported then it should not
+// have come to board... mp3 mp4 html certain files not supported yet"). Before this,
+// `addFileNode` uploaded and created a node for literally any file — extraction.ts
+// (server-side) already classified pdf/docx/xlsx/xls as extractable and images as
+// "visual, no extraction needed," but EVERYTHING else (mp3, mp4, html, zip, txt, …)
+// still got a real board card, just one showing "This file type isn't supported for
+// text extraction" inline — a confusing half-success for something the user expected
+// to be rejected outright. This list is the single client-side source of truth for
+// "can this even become a card" and must be kept in sync with extraction.ts's own
+// `IMAGE_EXTENSIONS`/`supported` sets on the server — duplicated rather than fetched at
+// runtime since it's small, static, and needed synchronously before any network call.
+const SUPPORTED_FILE_EXTENSIONS = new Set([
+  "pdf",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+  "svg",
+  "bmp",
+  "heic",
+]);
+
+function extensionOf(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  return dot === -1 ? "" : filename.slice(dot + 1).toLowerCase();
+}
+
+export function isSupportedFileType(filename: string): boolean {
+  return SUPPORTED_FILE_EXTENSIONS.has(extensionOf(filename));
+}
 
 // Fields every node type's data shares — not enforced at the type level beyond this
 // (each type still declares its own interface, extending Record<string, unknown> like
@@ -113,12 +150,28 @@ export interface VideoNodeData extends Record<string, unknown> {
   cardHeight?: number;
 }
 
+// Grouping (Phase 3, TF-Grouping) — a `group` node is a real node type (architecture.md
+// §4.1/§5.3 already lists it alongside text/video/chat/mindmap; this resolves this
+// phase's own "is group a node type or a UI-only selection concept?" open question).
+// Unlike the four content types above, `cardWidth`/`cardHeight` here are the group's
+// CONTAINER size, computed from its members' bounding box at creation time (see
+// group-node.tsx), not an opt-in resize — every group has these set from the moment it
+// exists, via the same existing generic `toRfNode` width/height mirroring, no special
+// case needed there.
+export interface GroupNodeData extends Record<string, unknown> {
+  label: string;
+  cardWidth: number;
+  cardHeight: number;
+}
+
 interface ServerNode {
   id: string;
   board_id: string;
   type: string;
   position_x: number;
   position_y: number;
+  // Grouping (Phase 3) — nullable; present on every row once migration 0003 lands.
+  parent_node_id?: string | null;
   data: unknown;
 }
 
@@ -134,11 +187,17 @@ function toRfNode(n: ServerNode): Node {
   const height = typeof data.cardHeight === "number" ? data.cardHeight : undefined;
   return {
     id: n.id,
-    type: n.type,
+    type: toRfType(n.type),
     position: { x: n.position_x, y: n.position_y },
     data,
     ...(width !== undefined ? { width } : {}),
     ...(height !== undefined ? { height } : {}),
+    // Grouping (Phase 3): mirrors React Flow's own parent/child mechanism directly —
+    // `parentId` + `extent: "parent"` is what makes React Flow move a group's members
+    // along with it and constrain them inside it natively, no hand-rolled drag logic
+    // needed here. Only set when there IS a parent — an explicit `undefined` key would
+    // still show up in the object via the spread below otherwise.
+    ...(n.parent_node_id ? { parentId: n.parent_node_id, extent: "parent" as const } : {}),
   };
 }
 
@@ -148,6 +207,37 @@ function toRfEdge(e: ServerEdge): Edge {
 
 const SAVE_DEBOUNCE_MS = 400;
 const MAX_HISTORY = 100;
+// Duplication (Phase 3, F-07) — Ctrl+D's fixed visual nudge so a duplicate never lands
+// exactly on top of its original (which would look like nothing happened until it's
+// dragged). Copy/paste (F-19) doesn't use this — it targets the current viewport center
+// instead (page.tsx's existing `centerPosition()`), since a paste is explicitly placed,
+// not an in-place nudge.
+const DUPLICATE_OFFSET = 32;
+
+// BUG (caught during Phase 3 testing, Istiyak: "card style specific hover/selected work
+// what we did is gone... generic selection/shadow is coming"): our custom group node's
+// backend/stored `type` is literally "group" — but React Flow ships its OWN built-in
+// node type ALSO named "group" with hardcoded default CSS (base stylesheet's
+// `.react-flow__node-group` rule: fixed padding/border/background, plus a generic thin
+// dark `box-shadow` on `.selected`). React Flow derives that CSS class straight from
+// `node.type`, so OUR group node was silently inheriting RF's own stock demo appearance
+// underneath/alongside our custom frame styling (group-node.tsx) the whole time — this
+// is what read as "a generic shadow instead of our selected styling."
+//
+// Fixed by giving the group node a DIFFERENT type string at the React-Flow/rendering
+// layer only. The stored/backend type (what's persisted in SQLite and what nodes.ts's
+// `isNodeType()` validates) stays the plain "group" it always was — no migration, no
+// risk to boards that already have real group nodes saved. `toRfType`/`toStoredType`
+// are the ONLY two places these translate into each other; every other place in this
+// file compares against `RF_GROUP_TYPE`, and every POST/PATCH body that sends a `type`
+// field to the backend goes through `toStoredType` first.
+export const RF_GROUP_TYPE = "groupFrame";
+function toRfType(storedType: string): string {
+  return storedType === "group" ? RF_GROUP_TYPE : storedType;
+}
+function toStoredType(rfType: string): string {
+  return rfType === RF_GROUP_TYPE ? "group" : rfType;
+}
 
 type HistoryEntry =
   | { kind: "create"; node: Node }
@@ -164,7 +254,52 @@ type HistoryEntry =
       nodeId: string;
       from: { width?: number; height?: number };
       to: { width: number; height: number };
-    };
+    }
+  // TF-06 — a drag-to-connect or an edge delete, each undoable the same way a node
+  // create/delete is: "connect" forward = the edge exists, backward = it doesn't.
+  | { kind: "connect"; edge: Edge }
+  | { kind: "disconnectEdge"; edge: Edge }
+  // Grouping (Phase 3) — "group" and "ungroup" are each other's inverse, both carrying
+  // the SAME shape (the group node itself + each member's position RELATIVE to it, the
+  // form React Flow's parentId convention requires): "group" forward = attachGroup
+  // (create/reparent), backward = detachGroup (remove/un-parent); "ungroup" is the exact
+  // opposite pairing. See attachGroup/detachGroup below — this symmetry is why there's
+  // only two helper functions for four directions (group fwd/bwd, ungroup fwd/bwd).
+  // Round (Istiyak, Phase 3 close-out testing: "On grouping several nodes if they
+  // already have nodes connected. That keeps intact. which should not be the case.
+  // Ideally after grouping nodes should not be there only groups node should appear"):
+  // "group"/"ungroup" now also carry the edge side-effect of absorbing/releasing a
+  // member's external connections onto the group itself (computeGroupEdgeAbsorption,
+  // groupSelectedNodes/ungroupNode below) — `removedMemberEdges`/`createdGroupEdges` on
+  // "group" are the edges that existed before/after that absorption, so undo can put
+  // the originals back and remove the absorbed ones; `groupEdges` on "ungroup" is
+  // whatever edges were live on the group at the moment it was dissolved, so undoing an
+  // ungroup can recreate them. Deliberately NOT trying to redistribute a dissolved
+  // group's edges back onto individual members on ungroup — with more than one member
+  // there's no single correct member to hand an absorbed connection back to, so
+  // ungrouping simply drops the group's own edges rather than guessing.
+  | {
+      kind: "group";
+      groupNode: Node;
+      members: { id: string; relativePosition: { x: number; y: number } }[];
+      removedMemberEdges: Edge[];
+      createdGroupEdges: Edge[];
+    }
+  | {
+      kind: "ungroup";
+      groupNode: Node;
+      members: { id: string; relativePosition: { x: number; y: number } }[];
+      groupEdges: Edge[];
+    }
+  // Duplication (Phase 3, F-07/F-19) — one entry covers BOTH Ctrl+D's in-place duplicate
+  // and an explicit paste: both are "a batch of brand-new nodes/edges came into
+  // existence together," undoable as one step regardless of how many nodes were in the
+  // selection. `nodes`/`edges` are the ALREADY-MATERIALIZED objects (final ids, final
+  // positions) — forward/redo recreates them with those SAME ids (recreateNodeRemote/
+  // recreateEdgeRemote, same identity-stability reasoning as every other entry here),
+  // backward/undo removes the whole batch outright (not an ungroup-release — these
+  // members were created BY this entry, so undoing it has nothing to preserve).
+  | { kind: "duplicate"; nodes: Node[]; edges: Edge[] };
 
 interface BoardState {
   boardId: string | null;
@@ -209,6 +344,54 @@ interface BoardState {
   /** Persists a card resize (ADR-0070) — called once on resize-end, not per drag tick. */
   saveNodeSize: (nodeId: string, size: { width: number; height: number }) => void;
   deleteNode: (nodeId: string) => Promise<void>;
+  // TF-06 (Phase 3) — drag-to-connect edge selection/deletion flows through React
+  // Flow's own onEdgesChange the exact same way onNodesChange above routes "remove"
+  // through deleteNode: everything else (selection) is a plain local state update,
+  // "remove" is routed to deleteEdge so every deletion path behaves identically.
+  onEdgesChange: (changes: EdgeChange[]) => void;
+  /** React Flow's onConnect handler fires this with the dragged connection's two
+   * endpoints. Self-loops and an exact duplicate of an existing edge (either
+   * direction) are silently ignored rather than erroring — dragging onto the wrong
+   * handle by a pixel shouldn't need an error toast this app doesn't have yet. */
+  connectNodes: (connection: Connection) => Promise<void>;
+  deleteEdge: (edgeId: string) => Promise<void>;
+  // Grouping (Phase 3). `bounds` is computed by the caller (the canvas page, which has
+  // live access to React Flow's measured node dimensions via useReactFlow() — the store
+  // itself only holds the explicit sizes we set, not live-measured ones) from the
+  // selected nodes' bounding box, padded. Silently no-ops under 2 members or if every
+  // selected node is already in a group (regrouping an already-grouped node isn't
+  // supported in this pass — ungroup first).
+  groupSelectedNodes: (
+    memberIds: string[],
+    bounds: { x: number; y: number; width: number; height: number }
+  ) => Promise<void>;
+  /** Removes the group container, restoring each member to its absolute canvas position
+   * (unchanged relative to each other) — not a delete of the members themselves. */
+  ungroupNode: (groupId: string) => Promise<void>;
+  // Duplication (Phase 3, F-07/F-19). `nodeIds` are the SELECTED top-level ids — any id
+  // that names a `group` node is automatically expanded to include its current members,
+  // so passing just the group's own id is enough to duplicate/copy it whole; a selected
+  // member whose group ISN'T also selected duplicates/copies as a lone, ungrouped node.
+  // In every case, an edge is only ever carried over when BOTH its endpoints are inside
+  // the same selected set (F-07's "external edges are NOT copied" rule) — see
+  // `buildCloneTemplate` for the one place this is implemented.
+  /** Ctrl+D — duplicates the selection in place on the SAME board, offset by a small
+   * fixed nudge (`DUPLICATE_OFFSET`). Never touches the clipboard below. */
+  duplicateSelection: (nodeIds: string[]) => Promise<void>;
+  /** Ctrl+C — freezes a snapshot of the selection into a clipboard that deliberately
+   * lives OUTSIDE this store's own state (see the module-level `clipboard` variable),
+   * so it survives `loadBoard` resetting everything else when the user navigates to a
+   * different board — the whole point of F-19's "paste on a different board." */
+  copySelection: (nodeIds: string[]) => void;
+  /** Ctrl+V — materializes whatever's in the clipboard onto the CURRENTLY loaded board
+   * (whichever board that is), anchored at `position` (page.tsx's `centerPosition()`
+   * for an explicit paste). A no-op if nothing's been copied yet. */
+  pasteClipboard: (position: { x: number; y: number }) => Promise<void>;
+  /** Clears every node's `selected` flag at once — the canvas page's pane-click handler
+   * uses this (board-store.ts owns `nodes` in controlled mode, so React Flow's own
+   * `useReactFlow().setNodes` can't be the one to do it; it would just be overwritten
+   * by the next render of this store's own `nodes`). */
+  deselectAllNodes: () => void;
   undo: () => void;
   redo: () => void;
 }
@@ -219,6 +402,43 @@ const pendingData = new Map<string, Record<string, unknown>>();
 // change since the last commit) — compared against what actually gets committed so a
 // debounce tick or a blur only produces a history entry when something really changed.
 const editBaseline = new Map<string, { type: string; data: Record<string, unknown> }>();
+
+// Duplication/copy-paste (Phase 3, F-19) — a frozen, board-agnostic snapshot of a past
+// `copySelection` call. Positions are stored RELATIVE to the selection's own bounding-box
+// top-left (`originX`/`originY` at copy time), and every reference between cloned nodes
+// (a child's parent, an internal edge's two endpoints) is keyed by the ORIGINAL node id
+// — `materializeTemplate` is what turns this into real nodes/edges, generating a fresh
+// id for every entry EACH time it's called, so pasting the same clipboard twice (or once
+// per board) always produces independent copies, never a collision.
+//
+// Deliberately a plain module-level variable, NOT part of the Zustand state this file
+// otherwise keeps everything in: `loadBoard` resets `nodes`/`edges`/`past`/`future` on
+// every board switch (by design — those are per-board), but a clipboard has to survive
+// exactly that switch for "paste on a different board" to mean anything. Same reasoning
+// already applies to `saveTimers`/`pendingData`/`editBaseline` above, just for a
+// longer-lived piece of data.
+interface CloneTemplateNode {
+  originalId: string;
+  type: string;
+  data: Record<string, unknown>;
+  relX: number;
+  relY: number;
+  /** The ORIGINAL id of this node's parent group, only when that group is ALSO part of
+   * this same template (i.e. was itself selected/copied) — never a dangling reference
+   * to a group that didn't come along. */
+  parentOriginalId?: string;
+}
+interface CloneTemplateEdge {
+  sourceOriginalId: string;
+  targetOriginalId: string;
+}
+interface CloneTemplate {
+  originX: number;
+  originY: number;
+  nodes: CloneTemplateNode[];
+  edges: CloneTemplateEdge[];
+}
+let clipboard: CloneTemplate | null = null;
 
 function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -273,9 +493,15 @@ export const useBoardStore = create<BoardState>((set, get) => {
     try {
       const { node: created } = await api.post<{ node: ServerNode }>(`/api/boards/${boardId}/nodes`, {
         id: node.id,
-        type: node.type,
+        type: toStoredType(node.type ?? "text"),
         position_x: node.position.x,
         position_y: node.position.y,
+        // Grouping (Phase 3): a node deleted while it was still a group member has
+        // `node.parentId` set and its position is already relative-to-group (how it was
+        // stored locally the whole time) — carried over here so undo-of-delete puts it
+        // back in its group, not floating top-level at its old relative coordinates
+        // reinterpreted as absolute ones.
+        parent_node_id: node.parentId ?? null,
         data: node.data,
       });
       set((s) => ({ nodes: [...s.nodes, toRfNode(created)] }));
@@ -284,6 +510,296 @@ export const useBoardStore = create<BoardState>((set, get) => {
       // for this session; a future save/edit on it will retry.
       set((s) => ({ nodes: [...s.nodes, node] }));
     }
+  }
+
+  // --- Edges (TF-06, Phase 3) --------------------------------------------------------
+  // Mirrors the node helpers immediately above: a *Local function updates only the
+  // in-memory store, a *Remote function is the best-effort server call, and
+  // recreateEdgeRemote restores a specific edge BY ITS ORIGINAL ID (not a fresh one)
+  // for undo-of-delete/redo-of-connect, exactly like recreateNodeRemote does for nodes.
+
+  function removeEdgeLocal(edgeId: string): Edge | undefined {
+    const state = get();
+    const edge = state.edges.find((e) => e.id === edgeId);
+    set((s) => ({ edges: s.edges.filter((e) => e.id !== edgeId) }));
+    return edge;
+  }
+
+  function deleteEdgeRemote(edgeId: string) {
+    const { boardId } = get();
+    if (!boardId) return;
+    api.delete(`/api/boards/${boardId}/edges/${edgeId}`).catch(() => {
+      // Best-effort — see deleteNodeRemote's own comment above; a failed server delete
+      // here just means it reappears on next reload, not a crash.
+    });
+  }
+
+  async function recreateEdgeRemote(edge: Edge) {
+    const { boardId } = get();
+    if (!boardId) return;
+    try {
+      const { edge: created } = await api.post<{ edge: ServerEdge }>(`/api/boards/${boardId}/edges`, {
+        id: edge.id,
+        source_node_id: edge.source,
+        target_node_id: edge.target,
+      });
+      set((s) => ({ edges: [...s.edges, toRfEdge(created)] }));
+    } catch {
+      // Best-effort, same reasoning as recreateNodeRemote: restore visually for this
+      // session even if the server round trip failed.
+      set((s) => ({ edges: [...s.edges, edge] }));
+    }
+  }
+
+  // Grouping absorbs connections (Istiyak: "Ideally after grouping nodes should not be
+  // there only groups node should appear") — an edge where exactly ONE endpoint is a
+  // node about to join the group gets re-pointed onto the GROUP itself rather than
+  // staying attached to the (now hidden-handle, per node-chrome.tsx's
+  // `hideConnections`) member buried inside it. An edge where BOTH endpoints are
+  // joining this same group is "internal" and is left exactly alone — the same F-07
+  // rule duplication already applies to its own copied selections. Returns the
+  // original edges to remove and the DEDUPED (source, target) pairs to create in their
+  // place, since two members both already wired to the same outside node must collapse
+  // onto one group<->that-node edge, not two overlapping ones.
+  function computeGroupEdgeAbsorption(
+    groupId: string,
+    memberIds: Set<string>,
+    edges: Edge[]
+  ): { toRemove: Edge[]; toCreatePairs: { source: string; target: string }[] } {
+    const toRemove: Edge[] = [];
+    const pairKeys = new Set<string>();
+    const toCreatePairs: { source: string; target: string }[] = [];
+    for (const edge of edges) {
+      const sourceIsMember = memberIds.has(edge.source);
+      const targetIsMember = memberIds.has(edge.target);
+      if (sourceIsMember === targetIsMember) continue; // both internal or neither — untouched
+      const source = sourceIsMember ? groupId : edge.source;
+      const target = targetIsMember ? groupId : edge.target;
+      toRemove.push(edge);
+      if (source === target) continue; // degenerate (both ends collapsed to the group) — drop silently
+      const key = `${source}->${target}`;
+      if (!pairKeys.has(key)) {
+        pairKeys.add(key);
+        toCreatePairs.push({ source, target });
+      }
+    }
+    return { toRemove, toCreatePairs };
+  }
+
+  // --- Grouping (Phase 3) -------------------------------------------------------------
+  // attachGroup is "make this group exist and these members belong to it" — used by the
+  // live group action, by redo-of-group, and by undo-of-ungroup (all three are the same
+  // operation from the data's point of view). detachGroup is its exact inverse. Both
+  // take the group node's id as fixed/given (the caller generates it client-side via
+  // crypto.randomUUID() before the first call) so redo always recreates the SAME group,
+  // never a lookalike with a new id — same identity-stability reasoning as every other
+  // *Remote recreate function in this file.
+
+  async function attachGroup(groupNode: Node, members: { id: string; relativePosition: { x: number; y: number } }[]) {
+    const { boardId } = get();
+    if (!boardId) return;
+    try {
+      await api.post(`/api/boards/${boardId}/nodes`, {
+        id: groupNode.id,
+        type: "group",
+        position_x: groupNode.position.x,
+        position_y: groupNode.position.y,
+        data: groupNode.data,
+      });
+    } catch {
+      // Best-effort — see recreateNodeRemote's own comment; the local state below still
+      // makes the group visually correct for this session even if this POST failed.
+    }
+    set((s) => ({
+      nodes: [
+        groupNode,
+        ...s.nodes
+          .filter((n) => n.id !== groupNode.id)
+          .map((n) => {
+            const member = members.find((m) => m.id === n.id);
+            if (!member) return n;
+            return { ...n, position: member.relativePosition, parentId: groupNode.id, extent: "parent" as const };
+          }),
+      ],
+    }));
+    for (const member of members) {
+      api
+        .patch(`/api/boards/${boardId}/nodes/${member.id}`, {
+          position_x: member.relativePosition.x,
+          position_y: member.relativePosition.y,
+          parent_node_id: groupNode.id,
+        })
+        .catch(() => {
+          // Best-effort, same posture as every other mutation in this file.
+        });
+    }
+  }
+
+  async function detachGroup(groupNode: Node, members: { id: string; relativePosition: { x: number; y: number } }[]) {
+    const { boardId } = get();
+    if (!boardId) return;
+    const absoluteMembers = members.map((m) => ({
+      id: m.id,
+      position: { x: groupNode.position.x + m.relativePosition.x, y: groupNode.position.y + m.relativePosition.y },
+    }));
+    set((s) => ({
+      nodes: s.nodes
+        .filter((n) => n.id !== groupNode.id)
+        .map((n) => {
+          const member = absoluteMembers.find((m) => m.id === n.id);
+          if (!member) return n;
+          const next: Node = { ...n, position: member.position };
+          delete next.parentId;
+          delete next.extent;
+          return next;
+        }),
+    }));
+    // The DELETE route also nulls every child's parent_node_id server-side as its own
+    // safety net (nodes.ts) — the explicit PATCHes below are still needed regardless,
+    // since that route doesn't know each member's new ABSOLUTE position, only that it's
+    // no longer grouped.
+    deleteNodeRemote(groupNode.id);
+    for (const member of absoluteMembers) {
+      api
+        .patch(`/api/boards/${boardId}/nodes/${member.id}`, {
+          position_x: member.position.x,
+          position_y: member.position.y,
+          parent_node_id: null,
+        })
+        .catch(() => {
+          // Best-effort, same posture as every other mutation in this file.
+        });
+    }
+  }
+
+  // --- Duplication / copy-paste (Phase 3, F-07/F-19) ----------------------------------
+  // buildCloneTemplate reads the CURRENT board state and turns a selection into the
+  // board-agnostic snapshot shape described above the `clipboard` variable; it never
+  // touches `set`/the server — that's materializeTemplate's job. Both duplicateSelection
+  // and copySelection are thin wrappers around this one function so the "expand a
+  // selected group to include its members" and "an edge only carries over when BOTH
+  // endpoints are inside the selection" rules exist in exactly one place.
+  function buildCloneTemplate(nodeIds: string[]): CloneTemplate | null {
+    const { nodes, edges } = get();
+    const idSet = new Set(nodeIds);
+    for (const id of nodeIds) {
+      const node = nodes.find((n) => n.id === id);
+      if (node?.type === RF_GROUP_TYPE) {
+        for (const member of nodes.filter((n) => n.parentId === id)) idSet.add(member.id);
+      }
+    }
+    const selected = nodes.filter((n) => idSet.has(n.id));
+    if (selected.length === 0) return null;
+
+    // BUG (Istiyak, Phase 3 close-out testing: "Group getting copied but internal
+    // nodes lost their positions"): a member node's `position` is RELATIVE TO ITS
+    // PARENT once grouped (React Flow's own `parentId` convention — attachGroup above
+    // stores exactly that, a position relative to the group's bounds), but the group
+    // node's own `position` is an ABSOLUTE canvas coordinate. The old code below took
+    // `Math.min` across BOTH without distinguishing them, mixing two different
+    // coordinate spaces into one "origin" — corrupting every member's `relX`/`relY`,
+    // worse the bigger the group's own absolute position was relative to its members'
+    // small in-group offsets. Only ROOT-level selected nodes (standalone nodes, or a
+    // group node itself) have an absolute position that belongs in this computation —
+    // a member being carried along because its group was selected is excluded.
+    let originX = Infinity;
+    let originY = Infinity;
+    for (const n of selected) {
+      if (n.parentId && idSet.has(n.parentId)) continue; // member — relative position, not absolute
+      originX = Math.min(originX, n.position.x);
+      originY = Math.min(originY, n.position.y);
+    }
+
+    const templateNodes: CloneTemplateNode[] = selected.map((n) => {
+      const isMember = Boolean(n.parentId && idSet.has(n.parentId));
+      return {
+        originalId: n.id,
+        type: n.type ?? "text",
+        data: structuredClone(n.data) as Record<string, unknown>,
+        // A member's position is ALREADY relative to its parent — carried over as-is,
+        // never measured against `originX`/`originY` (an absolute-coordinate concept
+        // that doesn't apply to it). Only a root-level node's position is relative to
+        // the selection's own origin.
+        relX: isMember ? n.position.x : n.position.x - originX,
+        relY: isMember ? n.position.y : n.position.y - originY,
+        parentOriginalId: n.parentId && idSet.has(n.parentId) ? n.parentId : undefined,
+      };
+    });
+    // F-07's explicit rule: an edge is "internal" (carried over) only when BOTH its
+    // endpoints are part of THIS selection — any edge reaching outside it is dropped,
+    // never copied onto the duplicate/paste.
+    const templateEdges: CloneTemplateEdge[] = edges
+      .filter((e) => idSet.has(e.source) && idSet.has(e.target))
+      .map((e) => ({ sourceOriginalId: e.source, targetOriginalId: e.target }));
+
+    return { originX, originY, nodes: templateNodes, edges: templateEdges };
+  }
+
+  // Turns a template into real, persisted nodes/edges anchored at (targetX, targetY) —
+  // generates a FRESH id for every templated node on every call (so the same template
+  // can be materialized repeatedly, e.g. pasted twice, without ever colliding), in two
+  // passes (groups before members — the same "parent before child" ordering page.tsx's
+  // render fix and attachGroup both already rely on) so a child's `parent_node_id`
+  // always names an id the backend already has a row for.
+  async function materializeTemplate(template: CloneTemplate, targetX: number, targetY: number) {
+    const { boardId } = get();
+    if (!boardId) return;
+    const idMap = new Map<string, string>();
+    for (const n of template.nodes) idMap.set(n.originalId, crypto.randomUUID());
+
+    const orderedNodes = [
+      ...template.nodes.filter((n) => n.type === RF_GROUP_TYPE),
+      ...template.nodes.filter((n) => n.type !== RF_GROUP_TYPE),
+    ];
+
+    const createdNodes: Node[] = [];
+    for (const n of orderedNodes) {
+      const newId = idMap.get(n.originalId)!;
+      const parent_node_id = n.parentOriginalId ? idMap.get(n.parentOriginalId) ?? null : null;
+      // Same bug, other half: a member's `relX`/`relY` is ALREADY its correct
+      // relative-to-parent offset (buildCloneTemplate above no longer re-measures it
+      // against the selection's origin) — only a root-level node's position should
+      // shift by the new (targetX, targetY) anchor. Adding targetX/targetY onto a
+      // member's offset too was what actually flung it away from its new parent's
+      // frame (then extent:"parent" clamped it to the edge, matching the screenshot).
+      const position_x = parent_node_id ? n.relX : targetX + n.relX;
+      const position_y = parent_node_id ? n.relY : targetY + n.relY;
+      try {
+        const { node: created } = await api.post<{ node: ServerNode }>(`/api/boards/${boardId}/nodes`, {
+          id: newId,
+          type: toStoredType(n.type),
+          position_x,
+          position_y,
+          parent_node_id,
+          data: n.data,
+        });
+        createdNodes.push(toRfNode(created));
+      } catch {
+        // Best-effort, same posture as every other mutation in this file — a failed
+        // create here just means that one node is missing until the next reload/retry,
+        // not a crash of the whole batch.
+      }
+    }
+
+    const createdEdges: Edge[] = [];
+    for (const e of template.edges) {
+      const source_node_id = idMap.get(e.sourceOriginalId);
+      const target_node_id = idMap.get(e.targetOriginalId);
+      if (!source_node_id || !target_node_id) continue; // that node's own create failed above
+      try {
+        const { edge: created } = await api.post<{ edge: ServerEdge }>(`/api/boards/${boardId}/edges`, {
+          id: crypto.randomUUID(),
+          source_node_id,
+          target_node_id,
+        });
+        createdEdges.push(toRfEdge(created));
+      } catch {
+        // Best-effort, same reasoning as above.
+      }
+    }
+
+    set((s) => ({ nodes: [...s.nodes, ...createdNodes], edges: [...s.edges, ...createdEdges] }));
+    pushHistory({ kind: "duplicate", nodes: createdNodes, edges: createdEdges });
   }
 
   function setNodePositionLocal(nodeId: string, x: number, y: number) {
@@ -309,7 +825,7 @@ export const useBoardStore = create<BoardState>((set, get) => {
   function commitNodeTypeAndData(nodeId: string, type: string, data: Record<string, unknown>) {
     applyNodeTypeAndDataLocal(nodeId, type, data);
     const { boardId } = get();
-    if (boardId) doSaveData(boardId, nodeId, { type, data });
+    if (boardId) doSaveData(boardId, nodeId, { type: toStoredType(type), data });
   }
 
   // Sets (or clears, when width/height are undefined — used by resize-undo reverting to
@@ -359,6 +875,38 @@ export const useBoardStore = create<BoardState>((set, get) => {
         setNodeSizeLocal(entry.nodeId, entry.to.width, entry.to.height);
         saveSizeRemote(entry.nodeId);
         break;
+      case "connect":
+        recreateEdgeRemote(entry.edge);
+        break;
+      case "disconnectEdge":
+        removeEdgeLocal(entry.edge.id);
+        deleteEdgeRemote(entry.edge.id);
+        break;
+      case "group":
+        attachGroup(entry.groupNode, entry.members);
+        for (const edge of entry.removedMemberEdges) {
+          removeEdgeLocal(edge.id);
+          deleteEdgeRemote(edge.id);
+        }
+        for (const edge of entry.createdGroupEdges) {
+          recreateEdgeRemote(edge);
+        }
+        break;
+      case "ungroup":
+        for (const edge of entry.groupEdges) {
+          removeEdgeLocal(edge.id);
+          deleteEdgeRemote(edge.id);
+        }
+        detachGroup(entry.groupNode, entry.members);
+        break;
+      case "duplicate":
+        for (const node of [...entry.nodes.filter((n) => n.type === RF_GROUP_TYPE), ...entry.nodes.filter((n) => n.type !== RF_GROUP_TYPE)]) {
+          recreateNodeRemote(node);
+        }
+        for (const edge of entry.edges) {
+          recreateEdgeRemote(edge);
+        }
+        break;
     }
   }
 
@@ -381,6 +929,41 @@ export const useBoardStore = create<BoardState>((set, get) => {
       case "resize":
         setNodeSizeLocal(entry.nodeId, entry.from.width, entry.from.height);
         saveSizeRemote(entry.nodeId);
+        break;
+      case "connect":
+        removeEdgeLocal(entry.edge.id);
+        deleteEdgeRemote(entry.edge.id);
+        break;
+      case "disconnectEdge":
+        recreateEdgeRemote(entry.edge);
+        break;
+      case "group":
+        detachGroup(entry.groupNode, entry.members);
+        for (const edge of entry.createdGroupEdges) {
+          removeEdgeLocal(edge.id);
+          deleteEdgeRemote(edge.id);
+        }
+        for (const edge of entry.removedMemberEdges) {
+          recreateEdgeRemote(edge);
+        }
+        break;
+      case "ungroup":
+        attachGroup(entry.groupNode, entry.members);
+        for (const edge of entry.groupEdges) {
+          recreateEdgeRemote(edge);
+        }
+        break;
+      case "duplicate":
+        // Undoing a duplicate/paste removes the WHOLE batch it created outright — unlike
+        // `deleteNode`'s group-aware special case, there's no pre-existing content to
+        // preserve here: every one of these nodes (members included) was itself created
+        // by this entry, so undo erases all of it. The backend's own node-DELETE route
+        // already cascades any edge touching a node it's deleting, so there's nothing
+        // separate to do for `entry.edges` here.
+        for (const node of entry.nodes) {
+          removeNodeAndEdgesLocal(node.id);
+          deleteNodeRemote(node.id);
+        }
         break;
     }
   }
@@ -572,6 +1155,57 @@ export const useBoardStore = create<BoardState>((set, get) => {
       }
     },
 
+    // Same "remove" split as onNodesChange above — selecting an edge is a plain local
+    // change, deleting one (edge-select + Delete key, the same deleteKeyCode the canvas
+    // already wires nodes through) goes through `deleteEdge` so it gets a history entry
+    // and a server call, not just a silent local removal.
+    onEdgesChange: (changes: EdgeChange[]) => {
+      const removeIds = changes.filter((c) => c.type === "remove").map((c) => c.id);
+      const rest = changes.filter((c) => c.type !== "remove");
+      if (rest.length > 0) {
+        set((state) => ({ edges: applyEdgeChanges(rest, state.edges) }));
+      }
+      for (const id of removeIds) {
+        get().deleteEdge(id);
+      }
+    },
+
+    // TF-06 — drag-to-connect. Ignores a self-loop and an exact duplicate (either
+    // direction) locally before ever calling the server, so a slightly-off drag that
+    // lands back on the same node or re-traces an existing connection just does
+    // nothing rather than erroring with no error UI to show it in.
+    connectNodes: async (connection) => {
+      const { boardId, edges } = get();
+      if (!boardId || !connection.source || !connection.target) return;
+      if (connection.source === connection.target) return;
+      const alreadyConnected = edges.some(
+        (e) =>
+          (e.source === connection.source && e.target === connection.target) ||
+          (e.source === connection.target && e.target === connection.source)
+      );
+      if (alreadyConnected) return;
+
+      try {
+        const { edge: created } = await api.post<{ edge: ServerEdge }>(`/api/boards/${boardId}/edges`, {
+          source_node_id: connection.source,
+          target_node_id: connection.target,
+        });
+        const rfEdge = toRfEdge(created);
+        set((state) => ({ edges: [...state.edges, rfEdge] }));
+        pushHistory({ kind: "connect", edge: rfEdge });
+      } catch {
+        // Best-effort, same posture as every other mutation in this store — a failed
+        // connect just means nothing was drawn; the user can try the drag again.
+      }
+    },
+
+    deleteEdge: async (edgeId) => {
+      const edge = removeEdgeLocal(edgeId);
+      if (!edge) return; // already removed (e.g. duplicate remove change in the same batch)
+      deleteEdgeRemote(edgeId);
+      pushHistory({ kind: "disconnectEdge", edge });
+    },
+
     addTextNode: async (position, content) => {
       const { boardId } = get();
       if (!boardId) return;
@@ -620,6 +1254,18 @@ export const useBoardStore = create<BoardState>((set, get) => {
     addFileNode: async (position, file: File) => {
       const { boardId } = get();
       if (!boardId) return;
+
+      // Gate BEFORE uploading — Istiyak: an unsupported type (mp3, mp4, html, …) should
+      // never reach the board at all, not land there with an inline "not supported"
+      // message after the fact. Every call site (toolbar picker, drag-drop, OS paste —
+      // page.tsx) funnels through this one function, so checking here covers all three
+      // without duplicating the check at each call site.
+      if (!isSupportedFileType(file.name)) {
+        useToastStore.getState().showToast(
+          `"${file.name}" isn't a supported file type yet. Try a PDF, Word, Excel, or image file instead.`
+        );
+        return;
+      }
 
       const formData = new FormData();
       formData.append("file", file);
@@ -767,11 +1413,124 @@ export const useBoardStore = create<BoardState>((set, get) => {
       pushHistory({ kind: "resize", nodeId, from, to: size });
     },
 
+    // Grouping (Phase 3): deleting a GROUP node (Delete key, hover "X", 3-dot menu —
+    // every path funnels through this one function) must NOT take this branch — a plain
+    // removeNodeAndEdgesLocal would leave its members' local `parentId` pointing at a
+    // group that no longer exists in `nodes`, which React Flow doesn't handle. Deleting
+    // a group IS ungrouping it (releases members, doesn't destroy them) plus removing
+    // the now-empty container, which is exactly what ungroupNode already does — so this
+    // delegates rather than duplicating that logic, and the resulting history entry is
+    // correctly an "ungroup" one, not a "delete" one.
     deleteNode: async (nodeId) => {
+      const target = get().nodes.find((n) => n.id === nodeId);
+      if (target?.type === RF_GROUP_TYPE) {
+        await get().ungroupNode(nodeId);
+        return;
+      }
       const { node, edges: removedEdges } = removeNodeAndEdgesLocal(nodeId);
       if (!node) return; // already removed (e.g. duplicate remove change in the same batch)
       deleteNodeRemote(nodeId);
       pushHistory({ kind: "delete", node, edges: removedEdges });
+    },
+
+    // Grouping (Phase 3). See the `groupSelectedNodes`/`ungroupNode` doc comments on the
+    // BoardState interface above for the contract; attachGroup/detachGroup (above) do
+    // the actual work, shared with undo/redo.
+    groupSelectedNodes: async (memberIds, bounds) => {
+      const { nodes, edges, boardId } = get();
+      if (!boardId) return;
+      const members = memberIds
+        .map((id) => nodes.find((n) => n.id === id))
+        .filter((n): n is Node => n !== undefined && !n.parentId)
+        .map((n) => ({
+          id: n.id,
+          relativePosition: { x: n.position.x - bounds.x, y: n.position.y - bounds.y },
+        }));
+      if (members.length < 2) return; // nothing groupable, or only one ungrouped node selected
+
+      const groupId = crypto.randomUUID();
+      const data: GroupNodeData = { label: "Group", cardWidth: bounds.width, cardHeight: bounds.height };
+      const groupNode: Node = {
+        id: groupId,
+        type: RF_GROUP_TYPE,
+        position: { x: bounds.x, y: bounds.y },
+        data,
+        width: bounds.width,
+        height: bounds.height,
+      };
+      await attachGroup(groupNode, members);
+
+      // Absorb each member's external edges onto the group itself (Istiyak: "Ideally
+      // after grouping nodes should not be there only groups node should appear") —
+      // see computeGroupEdgeAbsorption's own comment for the dedup rule.
+      const memberIdSet = new Set(members.map((m) => m.id));
+      const { toRemove, toCreatePairs } = computeGroupEdgeAbsorption(groupId, memberIdSet, edges);
+      for (const edge of toRemove) {
+        removeEdgeLocal(edge.id);
+        deleteEdgeRemote(edge.id);
+      }
+      const createdGroupEdges: Edge[] = [];
+      for (const pair of toCreatePairs) {
+        try {
+          const { edge: created } = await api.post<{ edge: ServerEdge }>(`/api/boards/${boardId}/edges`, {
+            id: crypto.randomUUID(),
+            source_node_id: pair.source,
+            target_node_id: pair.target,
+          });
+          const rfEdge = toRfEdge(created);
+          set((s) => ({ edges: [...s.edges, rfEdge] }));
+          createdGroupEdges.push(rfEdge);
+        } catch {
+          // Best-effort, same posture as every other mutation in this file.
+        }
+      }
+
+      pushHistory({ kind: "group", groupNode, members, removedMemberEdges: toRemove, createdGroupEdges });
+    },
+
+    ungroupNode: async (groupId) => {
+      const { nodes, edges } = get();
+      const groupNode = nodes.find((n) => n.id === groupId && n.type === RF_GROUP_TYPE);
+      if (!groupNode) return;
+      const members = nodes
+        .filter((n) => n.parentId === groupId)
+        .map((n) => ({ id: n.id, relativePosition: { ...n.position } }));
+      // The group's own edges (absorbed at group-time, or connected directly since)
+      // don't get redistributed back to any one member — with several members there's
+      // no single correct owner to hand an absorbed connection back to — so ungrouping
+      // just drops them. Captured here (not re-derived later) so undoing this specific
+      // ungroup can recreate exactly these edges, not whatever the group happens to
+      // have at some other time.
+      const groupEdges = edges.filter((e) => e.source === groupId || e.target === groupId);
+      for (const edge of groupEdges) {
+        removeEdgeLocal(edge.id);
+        deleteEdgeRemote(edge.id);
+      }
+      await detachGroup(groupNode, members);
+      pushHistory({ kind: "ungroup", groupNode, members, groupEdges });
+    },
+
+    // Duplication / copy-paste (Phase 3, F-07/F-19). See buildCloneTemplate/
+    // materializeTemplate above for the shared logic; these three are thin wrappers
+    // that differ only in WHERE the result lands and whether the clipboard is touched.
+    duplicateSelection: async (nodeIds) => {
+      const template = buildCloneTemplate(nodeIds);
+      if (!template) return;
+      await materializeTemplate(template, template.originX + DUPLICATE_OFFSET, template.originY + DUPLICATE_OFFSET);
+    },
+
+    copySelection: (nodeIds) => {
+      const template = buildCloneTemplate(nodeIds);
+      if (template) clipboard = template;
+    },
+
+    pasteClipboard: async (position) => {
+      if (!clipboard) return;
+      await materializeTemplate(clipboard, position.x, position.y);
+    },
+
+    deselectAllNodes: () => {
+      set((s) => ({ nodes: s.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)) }));
     },
 
     undo: () => {

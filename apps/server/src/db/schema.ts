@@ -7,7 +7,7 @@
 // every table gets created_at/updated_at, `boards` additionally gets deleted_at (soft-delete),
 // booleans use an is_/has_ prefix.
 
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 const id = () =>
@@ -65,6 +65,16 @@ export const nodes = sqliteTable("nodes", {
   type: text("type").notNull(), // "text" | "video" | "file" | "link" | "chat" | "mindmap" | "group"
   position_x: real("position_x").notNull().default(0),
   position_y: real("position_y").notNull().default(0),
+  // Phase 3, TF-Grouping: which `group`-type node (if any) this node is a member of.
+  // Mirrors React Flow's own `parentId` concept directly (board-store.ts's `toRfNode`
+  // maps this 1:1) rather than inventing a separate membership model — React Flow
+  // already natively handles "drag the group, children move with it" and "constrain a
+  // child inside its group" once a node carries `parentId` + `extent: 'parent'`, so
+  // there's no grouping *logic* to hand-roll beyond maintaining this one column.
+  // Self-referencing FK, nullable (most nodes belong to no group); no cascade at the DB
+  // level — ungrouping explicitly nulls this on every child first, same pattern
+  // boards.ts's folder-delete "move" action already uses for `boards.folder_id`.
+  parent_node_id: text("parent_node_id").references((): AnySQLiteColumn => nodes.id),
   data: text("data", { mode: "json" }).notNull().default("{}"),
   ...timestamps,
 });

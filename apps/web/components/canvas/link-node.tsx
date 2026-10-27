@@ -2,13 +2,12 @@
 
 import * as React from "react";
 import type { NodeProps } from "@xyflow/react";
-import { Globe, Pencil } from "lucide-react";
+import { Link2, Pencil } from "lucide-react";
 import { useBoardStore, type LinkNodeData } from "@/stores/board-store";
 import { NodeChrome } from "@/components/canvas/node-chrome";
 import { NodeHeader } from "@/components/canvas/node-header";
 import { NodeNotesField } from "@/components/canvas/node-notes-field";
 import { parseVideoUrl } from "@/lib/video-platform";
-import { cn } from "@/lib/utils";
 
 // TF-13 — generic link/reference node (F-27). Still does no scraping of a page's actual
 // article/body content — that stays squarely out of scope (ADR-0053) — but round 2 of
@@ -25,26 +24,17 @@ import { cn } from "@/lib/utils";
 // (board-store.ts's `convertLinkNodeToVideo`) — checked on blur, same moment the
 // field's edit commits.
 //
-// Round 6 / ADR-0075 (Istiyak, with a concrete reference screenshot of Poppy's own blue
-// link card — globe icon, external-link icon, no 3-dot menu, a full-width preview image
-// below the header): three changes from round 2's version —
-// (1) the header's inline title edit is GONE (Istiyak: "link card header should not be
-//     editable avoid the complexity") — the header now only ever shows the resolved
-//     title (or the URL/"Link" fallback) as plain text, never a click-to-edit field;
-// (2) the raw URL now lives in its OWN row below the header, ALWAYS visible as small
-//     secondary gray text with its own pencil edit icon beside it (previously this row
-//     only showed up before a title had resolved or while editing — Istiyak wants it
-//     visible at all times, "can showcase link below in small gray secondary text with
-//     edit pencil link");
-// (3) when the metadata fetch found an Open Graph/Twitter-Card image, it renders as a
-//     full-width preview image above the URL row, at the same visual weight/aspect
-//     treatment as the video card's own thumbnail — falling back to the plain favicon-
-//     only header treatment when no such image exists, never an empty image box.
-function LinkNodeImpl({ id, data, selected }: NodeProps) {
+// ADR-0075 (restored — Istiyak: "Link card header editable which we denied also came
+// back"): the header's title is plain, non-editable text — the "complexity" an
+// inline-editable header title plus a separately-editable URL both invited is exactly
+// what this ADR avoids. There's still exactly one editable field (the URL itself),
+// surfaced through the compact row below the header — see `showCompactUrlRow`.
+function LinkNodeImpl({ id, data, selected, parentId }: NodeProps) {
   const typedData = data as LinkNodeData;
   const updateNodeData = useBoardStore((state) => state.updateNodeData);
   const flushNodeData = useBoardStore((state) => state.flushNodeData);
   const deleteNode = useBoardStore((state) => state.deleteNode);
+  const duplicateSelection = useBoardStore((state) => state.duplicateSelection);
   const convertLinkNodeToVideo = useBoardStore((state) => state.convertLinkNodeToVideo);
   const refreshLinkPreview = useBoardStore((state) => state.refreshLinkPreview);
 
@@ -105,6 +95,35 @@ function LinkNodeImpl({ id, data, selected }: NodeProps) {
     }
   }, [id, typedData.url, typedData.metaForUrl, flushNodeData, convertLinkNodeToVideo, refreshLinkPreview]);
 
+  // Round 2 (Istiyak: "on link edit i still need to press enter to get back that to
+  // preview. On canvas click that still don't go automatically to preview mode"): Enter
+  // already worked (it explicitly blurs the input, routing through `handleUrlBlur`
+  // above) — only a canvas click didn't. page.tsx's `onPaneClick` already blurs
+  // `document.activeElement` on every pane click, which SHOULD fire this same input's
+  // native blur — but that only fires if this input is still literally
+  // `document.activeElement` at the moment React Flow's own pointer handling finishes
+  // with the event, which isn't guaranteed (a canvas/pan library doing its own
+  // preventDefault-heavy pointer handling is exactly the kind of thing that can eat a
+  // native focus transition before React's synthetic blur ever dispatches). Rather than
+  // chase that timing through a library this app doesn't own, this listens for ANY
+  // pointerdown outside the URL row directly — a standard "click outside closes it"
+  // pattern that doesn't depend on native blur firing at all, so it closes correctly
+  // whether the outside click lands on open canvas, a different card, or anywhere else.
+  // Capture phase (`true`) so this still sees the event even if something upstream
+  // later calls `stopPropagation`. Only attached while actually editing, so there's no
+  // listener sitting on `document` the rest of the time.
+  const urlRowRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!editingUrl) return;
+    const handlePointerDownOutside = (event: PointerEvent) => {
+      if (urlRowRef.current && event.target instanceof Node && !urlRowRef.current.contains(event.target)) {
+        handleUrlBlur();
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDownOutside, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDownOutside, true);
+  }, [editingUrl, handleUrlBlur]);
+
   let domain = "";
   try {
     domain = typedData.url ? new URL(typedData.url).hostname.replace(/^www\./, "") : "";
@@ -112,108 +131,113 @@ function LinkNodeImpl({ id, data, selected }: NodeProps) {
     domain = typedData.url;
   }
   const headerLabel = status === "loading" ? "Loading…" : typedData.title || domain || "Link";
-  // Round 6: the URL row is now ALWAYS shown (previously hidden once a title resolved).
+  // ADR-0075 (restored — Istiyak: "Link card header editable which we denied also
+  // came back"): the header's title is now always plain text, never inline-editable
+  // (no `onLabelCommit`), and the 3-dot menu that used to carry a standalone "Edit
+  // link" item is gone entirely. That item's only job — reopening this row's own URL
+  // input — is folded back into this row directly: it now stays visible (with its own
+  // hover-only pencil, below) for every link that has a URL, not only ones that failed
+  // to resolve, so editing the URL is still reachable without a menu to put it in.
+  const showCompactUrlRow = editingUrl || Boolean(typedData.url);
   // ADR-0070: the explicit resized size, read from `data` — see node-chrome.tsx's top
-  // comment for why this must not be NodeProps' own `width`/`height` (BUG-012). Round 6
-  // (Istiyak: "none of the node cards needed resize" apart from text) — this is still
-  // read for backward compat with a card resized before this round, but `onResizeEnd`
-  // is no longer passed to `NodeChrome` below, so no new resize can happen.
+  // comment for why this must not be NodeProps' own `width`/`height` (BUG-012).
   const explicitWidth = typedData.cardWidth;
   const explicitHeight = typedData.cardHeight;
-  // Round 6: a full-width preview image (an Open Graph/Twitter-Card image from the same
-  // metadata fetch) when one exists, falling back to the compact favicon-only treatment
-  // otherwise — see board-store.ts's `previewImageUrl` field and the file-top comment.
-  const [previewImageFailed, setPreviewImageFailed] = React.useState<string | undefined>(undefined);
-  const showPreviewImage =
-    status === "ok" && Boolean(typedData.previewImageUrl) && typedData.previewImageUrl !== previewImageFailed;
 
   return (
     <NodeChrome
+      id={id}
       selected={selected}
+      // Istiyak (Phase 3 testing): "All documents and link cards looks the same shade."
+      // The real fix is ADR-0075's per-filetype document colors (file-node.tsx), which
+      // had drifted back to one flat "warning" amber for every document — that flat
+      // scheme is what actually made pdf/docx/xlsx cards indistinguishable from each
+      // OTHER, not this card's own color. Link stays "neutral" (gray) per ADR-0075's own
+      // explicit call: it deliberately shares its shade with an image-type file card
+      // (both "neutral"), and ADR-0075 already bumped neutral one step darker
+      // (gray.100 → gray.200, semantic.json) for more contrast against the page
+      // background — "success" (green) belongs to Excel now that per-filetype color is
+      // restored, so reusing it here would just trade one collision for another.
       accent="neutral"
       header={
-        // Round 6 (Istiyak: "link card header should not be editable avoid the
-        // complexity"): no `onLabelCommit` any more — this is plain text now, never a
-        // click-to-edit field. `Globe` (matching the reference screenshot's own generic-
-        // link icon) is the fallback the moment no favicon has resolved yet/failed.
         <NodeHeader
-          icon={Globe}
+          icon={Link2}
           label={headerLabel}
           faviconUrl={status === "ok" ? faviconUrl : undefined}
           onOpen={typedData.url ? () => window.open(typedData.url, "_blank", "noopener,noreferrer") : undefined}
           openLabel="Open link"
+          onDuplicate={() => duplicateSelection([id])}
           spinning={status === "loading"}
         />
       }
       width={explicitWidth}
       height={explicitHeight}
       onDelete={() => deleteNode(id)}
+      hideConnections={Boolean(parentId)}
+      // ADR-0075: no `onResizeEnd` — resize is text-only. See file-node.tsx's comment on
+      // this same change for the full reasoning.
     >
-      {showPreviewImage ? (
-        <button
-          type="button"
-          onClick={() => window.open(typedData.url, "_blank", "noopener,noreferrer")}
-          aria-label={`Open "${headerLabel}"`}
-          className={cn(
-            "nodrag relative block h-32 w-full shrink-0 overflow-hidden bg-background-muted",
-            "transition-transform duration-fast ease-standard"
-          )}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element -- an external OG/
-              Twitter-Card image URL from the lightweight metadata fetch, not a local/
-              optimizable asset. */}
-          <img
-            src={typedData.previewImageUrl}
-            alt=""
-            className="h-full w-full object-cover"
-            onError={() => setPreviewImageFailed(typedData.previewImageUrl)}
-          />
-        </button>
-      ) : null}
-
-      {/* Round 6: always visible (not conditional on status any more) — the raw URL as
-          small secondary gray text, with its own pencil icon to switch into editing.
-          The header above never becomes an input any more; this row is the ONLY way to
-          edit a link card's URL now. */}
-      <div className="flex items-center gap-1 px-2.5 py-1.5">
-        {editingUrl ? (
-          <input
-            autoFocus={!typedData.url}
-            className="nodrag w-full rounded border border-border-default bg-background-page px-2 py-1 text-xs text-text-primary placeholder:text-text-muted focus-visible:border-border-focus focus-visible:outline-none"
-            placeholder="https://…"
-            value={typedData.url}
-            onChange={(event) => {
-              const next = event.target.value;
-              updateNodeData(id, { ...typedData, url: next });
-              // Convert the instant a recognizable video URL is typed or pasted in,
-              // rather than waiting for blur — a card pasted-and-left-focused (no blur
-              // event fires) used to sit stuck showing the raw editable input forever
-              // (BUG-014). `handleUrlBlur` below still covers the non-video/blur path.
-              if (parseVideoUrl(next)) {
-                flushNodeData(id);
-                setEditingUrl(false);
-                convertLinkNodeToVideo(id, next);
-              }
-            }}
-            onBlur={handleUrlBlur}
-          />
-        ) : (
-          <>
-            <span className="min-w-0 flex-1 truncate text-xs text-text-secondary" title={typedData.url}>
-              {typedData.url || "Add a URL…"}
-            </span>
+      {showCompactUrlRow ? (
+        <div ref={urlRowRef} className="flex items-center gap-1.5 px-2.5 py-1.5">
+          {/* Istiyak (Phase 3 testing): "in start should have a link icon" — a small
+              leading glyph so this row reads as a URL at a glance, in both its editable
+              and resolved-but-not-yet-"ok" states, rather than looking like a bare line
+              of text. */}
+          <Link2 className="size-3 shrink-0 text-text-muted" aria-hidden="true" />
+          {editingUrl ? (
+            <input
+              autoFocus={!typedData.url}
+              className="nodrag w-full rounded border border-border-default bg-background-page px-2 py-1 text-xs text-text-primary placeholder:text-text-muted focus-visible:border-border-focus focus-visible:outline-none"
+              placeholder="https://…"
+              value={typedData.url}
+              onChange={(event) => {
+                const next = event.target.value;
+                updateNodeData(id, { ...typedData, url: next });
+                // Convert the instant a recognizable video URL is typed or pasted in,
+                // rather than waiting for blur — a card pasted-and-left-focused (no blur
+                // event fires) used to sit stuck showing the raw editable input forever
+                // (BUG-014). `handleUrlBlur` below still covers the non-video/blur path.
+                if (parseVideoUrl(next)) {
+                  flushNodeData(id);
+                  setEditingUrl(false);
+                  convertLinkNodeToVideo(id, next);
+                }
+              }}
+              onBlur={handleUrlBlur}
+              // BUG (Phase 3 testing, Istiyak: "after edit if... press enter it stays as
+              // input"): there was no key handling at all here — Enter on a bare <input>
+              // with no enclosing <form> does nothing by itself, so it never reached
+              // `handleUrlBlur`. Explicitly blurring on Enter routes it through the exact
+              // same commit path a real blur already uses, rather than duplicating that
+              // logic here. Escape reverts to the last-saved URL without committing,
+              // matching every other inline-editable field in this app (NodeHeader's
+              // label rename, the group frame's rename).
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  event.currentTarget.blur();
+                } else if (event.key === "Escape") {
+                  updateNodeData(id, { ...typedData, url: typedData.metaForUrl || typedData.url });
+                  setEditingUrl(false);
+                }
+              }}
+            />
+          ) : (
             <button
               type="button"
               onClick={() => setEditingUrl(true)}
-              aria-label="Edit link"
-              title="Edit link"
-              className="nodrag shrink-0 rounded p-0.5 text-text-muted transition-colors duration-fast hover:text-text-secondary"
+              className="nodrag group/url flex min-w-0 flex-1 items-center gap-1 rounded text-left text-xs text-text-secondary hover:text-text-primary"
+              title={typedData.url}
             >
-              <Pencil className="size-3" aria-hidden="true" />
+              <span className="truncate">{status === "error" ? typedData.url : domain}</span>
+              <Pencil
+                className="size-3 shrink-0 opacity-0 transition-opacity group-hover/url:opacity-100"
+                aria-hidden="true"
+              />
             </button>
-          </>
-        )}
-      </div>
+          )}
+        </div>
+      ) : null}
 
       <NodeNotesField
         value={typedData.notes}

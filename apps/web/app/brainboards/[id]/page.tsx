@@ -9,20 +9,27 @@ import {
   BackgroundVariant,
   Controls,
   ControlButton,
+  MarkerType,
+  SelectionMode,
   useReactFlow,
   type Node,
   type NodeTypes,
   type OnNodeDrag,
+  type DefaultEdgeOptions,
+  type IsValidConnection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Type, Link2, FileUp, Undo2, Redo2, Plus, Minus, Maximize2 } from "lucide-react";
-import { useBoardStore } from "@/stores/board-store";
+import { useBoardStore, RF_GROUP_TYPE } from "@/stores/board-store";
+import { useToastStore } from "@/stores/toast-store";
 import { TextNode } from "@/components/canvas/text-node";
 import { FileNode } from "@/components/canvas/file-node";
 import { LinkNode } from "@/components/canvas/link-node";
 import { VideoNode } from "@/components/canvas/video-node";
+import { GroupNode } from "@/components/canvas/group-node";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { Button } from "@/components/ui/button";
+import { ToastHost } from "@/components/ui/toast-host";
 
 // TF-03 — React Flow canvas mount (implementation_plan.md Phase 2 step 4). The
 // board-store (ADR-0012) owns nodes/edges/autosave; this file is just the view.
@@ -32,7 +39,13 @@ const nodeTypes: NodeTypes = {
   file: FileNode,
   link: LinkNode,
   video: VideoNode,
+  [RF_GROUP_TYPE]: GroupNode,
 };
+
+// Grouping (Phase 3) — padding around the selected members' combined bounding box when
+// Ctrl+G computes a new group's frame (handleGroupShortcut below). Purely cosmetic
+// breathing room, not a layout constraint React Flow enforces itself.
+const GROUP_PADDING = 48;
 
 // Node-card-overhaul pass (ADR-0065/ADR-0066): minZoom/maxZoom and fitView's own cap
 // are tuned against the SMALLER card footprint (node-chrome.tsx, w-56 not w-64) — fit
@@ -52,6 +65,17 @@ const FIT_VIEW_OPTIONS = { padding: 0.4, maxZoom: 1 };
 // more specific than a single utility class — so this uses an inline `style` (highest
 // specificity short of `!important`) instead, on every custom icon in this cluster.
 const CONTROL_ICON_STYLE: React.CSSProperties = { fill: "none" };
+
+// TF-06 (Phase 3) — "Edge visually distinguishes direction (source → target)": a closed
+// arrowhead at the target end, the universal convention for a directed connection, is
+// simpler and more legible at this card size than color-coding or a label would be.
+// `var(--color-text-muted)` (not an accent color) so an edge reads as structural, not as
+// belonging to one particular node's own accent — it connects two different-colored
+// cards, so tying its color to either one would misleadingly favor that node.
+const DEFAULT_EDGE_OPTIONS: DefaultEdgeOptions = {
+  markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: "var(--color-text-muted)" },
+  style: { stroke: "var(--color-text-muted)", strokeWidth: 1.5 },
+};
 
 export default function BoardCanvasPage() {
   // useParams() is only resolvable at request time, which next.config.ts's
@@ -83,17 +107,25 @@ function CanvasShell({ boardId }: { boardId: string }) {
     loadError,
     loadBoard,
     onNodesChange,
+    onEdgesChange,
+    connectNodes,
     saveNodePosition,
     addTextNode,
     addLinkNode,
     addFileNode,
     addVideoNodeFromUrl,
+    groupSelectedNodes,
+    ungroupNode,
+    duplicateSelection,
+    copySelection,
+    pasteClipboard,
+    deselectAllNodes,
     undo,
     redo,
   } = useBoardStore();
   const canUndo = useBoardStore((state) => state.past.length > 0);
   const canRedo = useBoardStore((state) => state.future.length > 0);
-  const { screenToFlowPosition, zoomIn, zoomOut, fitView } = useReactFlow();
+  const { screenToFlowPosition, zoomIn, zoomOut, fitView, getNodes } = useReactFlow();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   // error-handling-conventions.md: data-mutating actions disable their control for the
   // duration of the in-flight request — a file upload (saves a file + creates a node)
@@ -119,6 +151,36 @@ function CanvasShell({ boardId }: { boardId: string }) {
     dragStartPositions.current.set(node.id, { ...node.position });
   }, []);
 
+  // BUG (Phase 3 testing, Istiyak: "if want to remove selection on canvas click does
+  // not work" — and, same root cause, a link card's URL field "stays as input" after
+  // clicking the canvas instead of converting back to its preview): `panOnDrag`
+  // includes the left button (ADR-0080, above), so React Flow's own pan/zoom gesture
+  // handling owns a plain click on the pane — in practice that swallows the browser's
+  // normal "focus moves elsewhere → blur fires" behavior for whatever was focused
+  // inside a card (an in-progress edit), and nothing here was forcing a deselect either.
+  // `onPaneClick` fires for a genuine click (no/near-zero drag distance) regardless of
+  // that pan config, so both are handled explicitly here instead of relying on
+  // behavior the pan gesture was quietly eating. Deselecting goes through the STORE
+  // (`deselectAllNodes`), not React Flow's own `useReactFlow().setNodes` — this board's
+  // `nodes` are controlled externally from board-store.ts, so a call to RF's internal
+  // setter here would just be overwritten by the next render of the controlled prop.
+  const handlePaneClick = React.useCallback(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    deselectAllNodes();
+  }, [deselectAllNodes]);
+
+  // TF-06 — rejects a self-loop WHILE dragging (React Flow shows its own "not allowed"
+  // cursor/connection-line styling for a connection this returns false for), not just
+  // after the drop — connectNodes also guards this server-side/in the store, but
+  // catching it live here means a drag back onto the same card never even looks like it
+  // might succeed. Duplicate-edge rejection is NOT duplicated here on purpose: that one
+  // depends on the current edges list and is already handled in one place
+  // (connectNodes) rather than kept in sync across two.
+  const isValidConnection: IsValidConnection = React.useCallback(
+    (connection) => connection.source !== connection.target,
+    []
+  );
+
   const handleNodeDragStop: OnNodeDrag<Node> = React.useCallback(
     (_event, node) => {
       const from = dragStartPositions.current.get(node.id) ?? node.position;
@@ -128,10 +190,12 @@ function CanvasShell({ boardId }: { boardId: string }) {
     [saveNodePosition]
   );
 
-  // Undo/redo keyboard shortcuts (Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y — ADR-0066). Guarded
-  // on `document.activeElement` the same way the paste handler below is: while actually
-  // typing in a node's textarea/input, this leaves the browser's own native text-field
-  // undo alone instead of hijacking it for canvas-level undo.
+  // Undo/redo/group/ungroup keyboard shortcuts (Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y —
+  // ADR-0066; Ctrl+G / Ctrl+Shift+G — Phase 3 grouping). Guarded on
+  // `document.activeElement` the same way the paste handler below is: while actually
+  // typing in a node's textarea/input (including the group name tag's own rename
+  // input, group-node.tsx), this leaves native text-field behavior alone instead of
+  // hijacking the key for a canvas-level action.
   React.useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       const active = document.activeElement;
@@ -153,11 +217,89 @@ function CanvasShell({ boardId }: { boardId: string }) {
       } else if (event.key.toLowerCase() === "y") {
         event.preventDefault();
         redo();
+      } else if (event.key.toLowerCase() === "g" && event.shiftKey) {
+        // Ungroup — operates on whatever group node(s) are currently selected. Looping
+        // (rather than assuming exactly one) costs nothing and means multi-selecting
+        // several groups and ungrouping them together just works.
+        event.preventDefault();
+        const selectedGroupIds = getNodes()
+          .filter((n) => n.selected && n.type === RF_GROUP_TYPE)
+          .map((n) => n.id);
+        for (const groupId of selectedGroupIds) {
+          ungroupNode(groupId);
+        }
+      } else if (event.key.toLowerCase() === "g") {
+        // Group — the selected, currently-ungrouped nodes (excluding any selected
+        // group itself; nested groups aren't supported, Phase 3 scope) become members
+        // of one new group frame sized to their combined bounding box plus padding.
+        // `getNodes()` (not the store's own `nodes`) is used specifically for its
+        // `measured` field — the actual on-screen size React Flow has observed via
+        // ResizeObserver, which is the only reliable size for a content card that
+        // hasn't been manually resized yet (board-store.ts's `toRfNode` only sets an
+        // explicit `width`/`height` once a card HAS been resized — see its own comment
+        // on why `NodeProps`' measured size, not an assumed default, is required here).
+        event.preventDefault();
+        const selected = getNodes().filter((n) => n.selected && n.type !== RF_GROUP_TYPE && !n.parentId);
+        if (selected.length >= 2) {
+          let minX = Infinity;
+          let minY = Infinity;
+          let maxX = -Infinity;
+          let maxY = -Infinity;
+          for (const n of selected) {
+            const width = n.measured?.width ?? n.width ?? 224;
+            const height = n.measured?.height ?? n.height ?? 120;
+            minX = Math.min(minX, n.position.x);
+            minY = Math.min(minY, n.position.y);
+            maxX = Math.max(maxX, n.position.x + width);
+            maxY = Math.max(maxY, n.position.y + height);
+          }
+          const bounds = {
+            x: minX - GROUP_PADDING,
+            y: minY - GROUP_PADDING,
+            width: maxX - minX + GROUP_PADDING * 2,
+            height: maxY - minY + GROUP_PADDING * 2,
+          };
+          groupSelectedNodes(selected.map((n) => n.id), bounds);
+        }
+      } else if (event.key.toLowerCase() === "d") {
+        // Duplicate (Phase 3, F-07) — the current selection, in place, on this board.
+        // `duplicateSelection` itself expands any selected group to include its
+        // members and drops any edge reaching outside the selection; this handler's
+        // only job is reading which nodes are currently selected.
+        event.preventDefault();
+        const selectedIds = getNodes()
+          .filter((n) => n.selected)
+          .map((n) => n.id);
+        if (selectedIds.length > 0) duplicateSelection(selectedIds);
+      } else if (event.key.toLowerCase() === "c") {
+        // Copy (Phase 3, F-19) — freezes the current selection into the app's own
+        // clipboard (board-store.ts), independent of the browser's OS-level clipboard.
+        // Deliberately NOT unified with the browser's native `copy`/`paste` events the
+        // paste-to-create handler below listens for: those two clipboards can
+        // technically coexist (e.g. real OS clipboard text left over from before this
+        // copy would still trigger that handler on the next Ctrl+V too) — an accepted
+        // edge case rather than plumbing our node data through the real OS clipboard
+        // for this pass.
+        const selectedIds = getNodes()
+          .filter((n) => n.selected)
+          .map((n) => n.id);
+        if (selectedIds.length > 0) {
+          event.preventDefault();
+          copySelection(selectedIds);
+        }
+      } else if (event.key.toLowerCase() === "v") {
+        // Paste (Phase 3, F-19) — materializes whatever's in OUR clipboard onto
+        // whichever board is currently loaded (works across a board switch precisely
+        // because that clipboard lives outside this store's per-board state — see its
+        // own comment in board-store.ts). A no-op if nothing's been copied yet, so this
+        // never fights with the native OS-paste handler below over an empty selection.
+        event.preventDefault();
+        pasteClipboard(centerPosition());
       }
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [undo, redo]);
+  }, [undo, redo, getNodes, groupSelectedNodes, ungroupNode, duplicateSelection, copySelection, pasteClipboard, centerPosition]);
 
   // Paste-to-create (Istiyak: "paste a URL directly onto the canvas" originally did
   // nothing — he had to add a link node first, then paste inside it; round 2 widened
@@ -204,9 +346,15 @@ function CanvasShell({ boardId }: { boardId: string }) {
               position.x += 24;
               position.y += 24;
             }
-          } catch {
-            // Mirrors handleFileChosen's own silent-failure handling below — no toast
-            // system exists yet in this app (Phase 1 scope).
+          } catch (err) {
+            // A genuinely unsupported type never throws here — addFileNode catches
+            // that itself and shows its own toast (board-store.ts). This catch is for
+            // everything else (network error, the server's own 415 backstop, …) —
+            // `ApiError`/fetch errors already carry a real message (lib/api.ts), so
+            // prefer that over a flattened generic string.
+            useToastStore
+              .getState()
+              .showToast(err instanceof Error ? err.message : "Couldn't add that file. Please try again.");
           } finally {
             setIsUploading(false);
           }
@@ -268,9 +416,11 @@ function CanvasShell({ boardId }: { boardId: string }) {
             position.x += 24;
             position.y += 24;
           }
-        } catch {
-          // See handleFileChosen's own comment below — same silent, non-crashing
-          // failure handling pending a real toast system.
+        } catch (err) {
+          // See handlePaste's own comment above — same reasoning, same toast.
+          useToastStore
+            .getState()
+            .showToast(err instanceof Error ? err.message : "Couldn't add that file. Please try again.");
         } finally {
           setIsUploading(false);
         }
@@ -287,16 +437,30 @@ function CanvasShell({ boardId }: { boardId: string }) {
       setIsUploading(true);
       try {
         await addFileNode(centerPosition(), file);
-      } catch {
-        // addFileNode already leaves the board state untouched on failure; a toast
-        // system doesn't exist yet in this app (Phase 1 scope), so this is a silent,
-        // non-crashing no-op for now — flagged as a UX gap worth a real error toast
-        // once one exists elsewhere in the app.
+      } catch (err) {
+        // See handlePaste's own comment above — same reasoning, same toast.
+        useToastStore
+          .getState()
+          .showToast(err instanceof Error ? err.message : "Couldn't add that file. Please try again.");
       } finally {
         setIsUploading(false);
       }
     },
     [addFileNode, centerPosition]
+  );
+
+  // Grouping (Phase 3) — React Flow requires a parent node to appear in the `nodes`
+  // array BEFORE any of its children (its own docs: a node with a `parentId` must come
+  // after the node it names). The store's own `nodes` array doesn't guarantee that: a
+  // board loaded fresh from the server lists rows in insertion order, and a group is
+  // always created AFTER the members it groups, so an unordered reload would put
+  // children before their own parent without this. Nested groups aren't supported
+  // (Phase 3 scope — see group-node.tsx), so a single stable partition — every
+  // parentless node first, then every child, each preserving its original relative
+  // order — is sufficient here; no general topological sort is needed.
+  const orderedNodes = React.useMemo(
+    () => [...nodes.filter((n) => !n.parentId), ...nodes.filter((n) => n.parentId)],
+    [nodes]
   );
 
   if (loadError) {
@@ -335,16 +499,42 @@ function CanvasShell({ boardId }: { boardId: string }) {
           },
         ]}
       />
-      <input ref={fileInputRef} type="file" className="hidden" onChange={handleFileChosen} disabled={isUploading} />
+      <input
+        ref={fileInputRef}
+        type="file"
+        // Narrows the OS picker's own file list to what addFileNode will actually
+        // accept (board-store.ts's SUPPORTED_FILE_EXTENSIONS) — a nice-to-have, not the
+        // real gate: `accept` is only a hint most file dialogs use to gray out/filter
+        // by default, and a user can usually still override it to "All Files," plus it
+        // does nothing at all for drag-drop or OS paste. addFileNode's own check is
+        // what actually blocks an unsupported type from reaching the board.
+        accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.gif,.webp,.svg,.bmp,.heic"
+        className="hidden"
+        onChange={handleFileChosen}
+        disabled={isUploading}
+      />
+      <ToastHost />
 
       <div className="flex-1" onDragOver={handleDragOver} onDrop={handleDrop}>
         <ReactFlow
-          nodes={nodes}
+          nodes={orderedNodes}
           edges={edges}
           nodeTypes={nodeTypes}
           onNodesChange={onNodesChange}
           onNodeDragStart={handleNodeDragStart}
           onNodeDragStop={handleNodeDragStop}
+          // TF-06 (Phase 3) — drag-to-connect: React Flow calls onConnect once a drag
+          // from one card's handle is released over a valid target handle on another;
+          // connectNodes (board-store.ts) does the actual create + history entry.
+          // onEdgesChange is edges' counterpart to onNodesChange above (same
+          // select-is-local/remove-goes-through-the-store split). defaultEdgeOptions
+          // gives every edge — freshly connected or loaded from the server — the same
+          // directional arrowhead without node-chrome.tsx or board-store.ts needing to
+          // know about styling at all.
+          onConnect={connectNodes}
+          onEdgesChange={onEdgesChange}
+          isValidConnection={isValidConnection}
+          defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
           // Deletion UX overhaul (ADR-0065): Delete key only — Backspace used to also be
           // bound here, which meant merely SELECTING a node and then pressing Backspace
           // for any ordinary reason silently deleted it with no confirmation and (at the
@@ -365,6 +555,28 @@ function CanvasShell({ boardId }: { boardId: string }) {
           panOnScroll
           selectionKeyCode="Shift"
           multiSelectionKeyCode={["Shift"]}
+          // Istiyak (Phase 3 testing): "if full card is not under selection it is not
+          // selected... even 30-40% covered then card should come under selection" —
+          // React Flow's default (`Full`) requires a node's ENTIRE box inside the drag
+          // rectangle; `Partial` selects on any overlap at all, matching how marquee
+          // selection works in every other canvas tool this app is modeled on (Figma,
+          // Miro, Poppy).
+          selectionMode={SelectionMode.Partial}
+          onPaneClick={handlePaneClick}
+          // BUG fix (Istiyak, still reported after the onPaneClick fix above: "once
+          // link edit then on canvas its not reverting to preview and stays as input"):
+          // the real remaining cause — React Flow's own click-vs-drag distinction
+          // (`paneClickDistance`, default 1px) decides whether a mousedown-then-mouseup
+          // counts as a genuine click at all. A real mouse/trackpad click almost always
+          // moves a couple of pixels between down and up, and with `panOnDrag`
+          // including the left button, anything past that 1px default gets classified
+          // as the START of a pan gesture instead — React Flow then suppresses the
+          // click outright, so `onPaneClick` (and the blur/deselect it drives) silently
+          // never fires at all for an ordinary human click, even though the handler
+          // itself was always correct. Widened to a much more forgiving 8px so a normal
+          // click still reads as a click, while an intentional drag (which moves far
+          // more than that) still pans exactly as before.
+          paneClickDistance={8}
           minZoom={MIN_ZOOM}
           maxZoom={MAX_ZOOM}
           fitView

@@ -19,11 +19,12 @@ import { cn } from "@/lib/utils";
 // created (board-store.ts's `addVideoNodeFromUrl` / `convertLinkNodeToVideo`): "loading"
 // while in flight, "ok" once title/thumbnail resolve, "error" for an invalid/private/
 // unreachable video — each gets its own clear visual state, never a blank or broken card.
-function VideoNodeImpl({ id, data, selected }: NodeProps) {
+function VideoNodeImpl({ id, data, selected, parentId }: NodeProps) {
   const typedData = data as VideoNodeData;
   const updateNodeData = useBoardStore((state) => state.updateNodeData);
   const flushNodeData = useBoardStore((state) => state.flushNodeData);
   const deleteNode = useBoardStore((state) => state.deleteNode);
+  const duplicateSelection = useBoardStore((state) => state.duplicateSelection);
 
   const openOriginal = React.useCallback(() => {
     window.open(typedData.url, "_blank", "noopener,noreferrer");
@@ -54,6 +55,7 @@ function VideoNodeImpl({ id, data, selected }: NodeProps) {
 
   return (
     <NodeChrome
+      id={id}
       selected={selected}
       accent={accent}
       header={
@@ -62,6 +64,7 @@ function VideoNodeImpl({ id, data, selected }: NodeProps) {
           label={headerLabel}
           onOpen={openOriginal}
           openLabel="Open original"
+          onDuplicate={() => duplicateSelection([id])}
           spinning={typedData.status === "loading"}
           iconBadge={isYoutube}
           accent={accent}
@@ -70,9 +73,9 @@ function VideoNodeImpl({ id, data, selected }: NodeProps) {
       width={explicitWidth}
       height={explicitHeight}
       onDelete={() => deleteNode(id)}
-      // Round 6 (Istiyak: "Apart from text none of the node cards needed resize") — no
-      // longer passed here; `width`/`height` above still honor a size persisted by an
-      // earlier round, for any video card resized before this change.
+      hideConnections={Boolean(parentId)}
+      // ADR-0075: no `onResizeEnd` — resize is text-only. See file-node.tsx's comment on
+      // this same change for the full reasoning.
     >
       <button
         type="button"

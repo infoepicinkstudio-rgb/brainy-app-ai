@@ -1,0 +1,1 @@
+ALTER TABLE `nodes` ADD `parent_node_id` text REFERENCES nodes(id);

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { NodeResizeControl } from "@xyflow/react";
+import { Handle, NodeResizeControl, Position, useUpdateNodeInternals } from "@xyflow/react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -95,36 +95,34 @@ export const RIBBON_SOLID_CLASSES: Record<NodeAccent, string> = {
   accent: "bg-ribbon-solid-accent",
 };
 
-// Round 6 / ADR-0075 (Istiyak: "Hover/select is currently showing brand accent color and
-// gray shadows which looks contradict from card style... apply slightly contrast shade
-// outside the card from card type style only. i.e. youtube card will have its own hover
-// style, link will have its own hover style"): hover/selected used to be one universal
-// blue ring (`border-border-focus`/`shadow-accent-focus`) regardless of the card's own
-// accent — replaced with a ring derived from the SAME `ribbonFg` color each card's header
-// already uses, so a YouTube card's selection ring reads red, a link card's reads
-// whichever accent it's on, etc. Tailwind v4 auto-generates `ring-*`/`border-*` utilities
-// for any color registered in the `--color-*` theme namespace (globals.css's `@theme
-// inline` block already registers `ribbon-fg-*`), so this needs no new token group of its
-// own — same mechanism as the header tint, a different application point, exactly as
-// asked. Applied to the OUTER container (not just the body) so the whole card — ribbon
-// peek and body both — reads as one selected unit (ADR-0073's "one container" principle,
-// now extended to the multi-select visual state too, not just sizing).
+// ADR-0075 (round 6, Istiyak: "Hover/select is currently showing brand accent color and
+// gray shadows which looks contradict from card style... youtube card will have its own
+// hover style, link will have its own hover style"): restored here after drifting back
+// to a universal brand-blue ring (Phase 3 testing, Istiyak: "Card style specific
+// hover/selected work what we did is gone. Now generic selection/shadow is coming. No
+// full card is getting selected."). The ring derives its color from the same
+// `ribbon-fg-*` CSS variables the header tint already uses — Tailwind v4 auto-generates
+// `ring-*` utilities for any color already registered in the `--color-*` theme
+// namespace (globals.css's `@theme inline` block), so this needs no new token group.
+// Round 2 (Istiyak: "Selection/hover ring is slightly harsh. make it subtle a bit."):
+// selected dropped from a full-strength 2px ring to a 1px ring at 70% opacity; the hover
+// ring (shown on an UNselected card) eased further still, to a faint 25%.
 export const RIBBON_RING_SELECTED_CLASSES: Record<NodeAccent, string> = {
-  neutral: "ring-ribbon-fg-neutral/50",
-  info: "ring-ribbon-fg-info/50",
-  danger: "ring-ribbon-fg-danger/50",
-  success: "ring-ribbon-fg-success/50",
-  warning: "ring-ribbon-fg-warning/50",
-  accent: "ring-ribbon-fg-accent/50",
+  neutral: "ring-1 ring-ribbon-fg-neutral/70",
+  info: "ring-1 ring-ribbon-fg-info/70",
+  danger: "ring-1 ring-ribbon-fg-danger/70",
+  success: "ring-1 ring-ribbon-fg-success/70",
+  warning: "ring-1 ring-ribbon-fg-warning/70",
+  accent: "ring-1 ring-ribbon-fg-accent/70",
 };
 
 export const RIBBON_RING_HOVER_CLASSES: Record<NodeAccent, string> = {
-  neutral: "hover:ring-ribbon-fg-neutral/30",
-  info: "hover:ring-ribbon-fg-info/30",
-  danger: "hover:ring-ribbon-fg-danger/30",
-  success: "hover:ring-ribbon-fg-success/30",
-  warning: "hover:ring-ribbon-fg-warning/30",
-  accent: "hover:ring-ribbon-fg-accent/30",
+  neutral: "hover:ring-1 hover:ring-ribbon-fg-neutral/25",
+  info: "hover:ring-1 hover:ring-ribbon-fg-info/25",
+  danger: "hover:ring-1 hover:ring-ribbon-fg-danger/25",
+  success: "hover:ring-1 hover:ring-ribbon-fg-success/25",
+  warning: "hover:ring-1 hover:ring-ribbon-fg-warning/25",
+  accent: "hover:ring-1 hover:ring-ribbon-fg-accent/25",
 };
 
 // Round 2 (ADR-0070): resizable cards. No new DB column — the resized size is mirrored
@@ -155,6 +153,7 @@ const MIN_CARD_WIDTH = 180;
 const MIN_CARD_HEIGHT = 90;
 
 export const NodeChrome = React.memo(function NodeChrome({
+  id,
   selected,
   accent = "neutral",
   header,
@@ -164,12 +163,17 @@ export const NodeChrome = React.memo(function NodeChrome({
   height,
   onDelete,
   onResizeEnd,
+  hideConnections,
 }: {
+  /** The React Flow node id — needed ONLY to tell React Flow to recompute this node's
+   * connection points when `hideConnections` flips (see that prop's own doc comment for
+   * why this is required, not cosmetic). */
+  id: string;
   selected?: boolean;
   accent?: NodeAccent;
-  /** The header row (icon + label + hover open-icon — round 6/ADR-0075 removed the
-   * 3-dot menu entirely) — rendered inside the colored ribbon layer, not inside the
-   * white body card (ADR-0071). */
+  /** The header row (icon + label + hover-only action icons, no menu — ADR-0075) —
+   * rendered inside the colored ribbon layer, not inside the white body card
+   * (ADR-0071). */
   header: React.ReactNode;
   /** Body content only — no header here, NodeChrome owns rendering that. */
   children: React.ReactNode;
@@ -179,48 +183,104 @@ export const NodeChrome = React.memo(function NodeChrome({
    * own `width`/`height`. */
   width?: number;
   height?: number;
-  /** Round 2 follow-up (Istiyak): a hover-only delete affordance — an "X" hidden by
-   * default so it can never be clicked by accident, revealed only while the card is
-   * hovered/focused. Floats on the OUTER (non-clipping) wrapper, not the inner
-   * `overflow-hidden` card itself, so it isn't clipped sitting half outside the
-   * card's own corner. Round 3/4 pushed it further outside the top-right corner for
-   * clearance from what was then the header's 3-dot menu. Round 6 (ADR-0075) removed
-   * that menu entirely — this "X" (plus the header's own hover open-icon) is now the
-   * card's ONLY set of hover affordances, alongside the Delete key, so its own styling
-   * was also toned down (no border/shadow, no red-on-hover) to read as quiet/minimal
-   * rather than a loud alert control, per Istiyak's explicit "styling can be
-   * minimalize... border, shadow, red color on X on hover all this can be minimize." */
+  /** Round 2 follow-up (Istiyak): a second, hover-only delete affordance alongside the
+   * Delete key — an "X" hidden by default so it can never be clicked by accident,
+   * revealed only while the card is hovered/focused. Floats on the OUTER
+   * (non-clipping) wrapper, not the inner `overflow-hidden` card itself, so it isn't
+   * clipped sitting half outside the card's own corner. Round 3 (Istiyak: "can be
+   * outside the header top right corner on hover" — top-left-inside-the-header read
+   * as squeezed into the bar itself) moved to float OUTSIDE the card's top-RIGHT
+   * corner instead, overlapping the ribbon's outer edge rather than sitting inside it.
+   * Round 4 (Istiyak: "still clash[es]" with the header's own hover icons, back when a
+   * 3-dot menu lived there) pushed further out again, `-top-2/-right-2` →
+   * `-top-4/-right-4`, for real clearance between the two hit areas (confirmed live:
+   * ~6px horizontal / ~4px vertical gap between the two hit boxes, not touching).
+   * ADR-0075 later deleted that menu outright, but the clearance is kept — the
+   * header's remaining hover icons (Duplicate/Open) sit well clear of this corner. */
   onDelete?: () => void;
-  /** Fires once, on resize-end (ADR-0070) — not per drag tick. Round 6 (Istiyak:
-   * "Apart from text none of the node cards needed resize... remove the resize
-   * functionality from all card apart from text"): only `text-node.tsx` still passes
-   * this now; file/link/video no longer do, so the resize handle below (gated on
-   * `selected && onResizeEnd`) simply never renders for those types — no separate
-   * "is this type resizable" flag needed, omitting the prop IS the off-switch. A card
-   * resized in an earlier round still renders at its saved `cardWidth`/`cardHeight`
-   * (via `width`/`height` below) — existing sizes aren't reset, only further resizing
-   * is disabled. */
+  /** Fires once, on resize-end (ADR-0070) — not per drag tick. */
   onResizeEnd?: (size: { width: number; height: number }) => void;
+  /** Phase 3 grouping follow-up (Istiyak: "Once Node Card covered under grouped then
+   * they should not have a node connectors. Only group will have node connector to
+   * pass the context of entire group content node cards"): pass `true` once this card
+   * has a `parentId` (i.e. it's a member of a group) to hide its own target/source
+   * handles. The group frame (group-node.tsx) always renders its own pair instead — a
+   * connection to/from the group is meant to carry the whole group's content, not one
+   * member's, so a member card having its own handles alongside the group's would be
+   * ambiguous about which one a dragged edge is even for. */
+  hideConnections?: boolean;
 }) {
   const hasExplicitSize = width !== undefined && height !== undefined;
+  // BUG (Istiyak: "Once group ungrouped then child nodes lost it functionality to
+  // connect nodes with other node card"): this card's two connection handles are
+  // CONDITIONALLY rendered below — mounted only when `!hideConnections`, unmounted
+  // entirely while it's a group member. React Flow keeps its own internal cache of
+  // each node's measured handle positions ("node internals"), built the first time a
+  // node renders; it does NOT automatically notice a node's handle SET changing later
+  // (handles added or removed, as opposed to a handle just moving) — that cache has to
+  // be told explicitly via `useUpdateNodeInternals`, a documented React Flow
+  // requirement for exactly this "conditionally-rendered handles" pattern. Without this,
+  // ungrouping correctly re-adds the handles to the DOM (visually present, even
+  // clickable-looking) but React Flow's own drag-to-connect hit-testing and edge
+  // rendering keep using the STALE "this node has zero handles" entry from while it was
+  // grouped — so a new connection attempt silently fails. Firing on every
+  // `hideConnections` change covers both directions (ungrouping AND grouping a node
+  // that already had a live connection).
+  const updateNodeInternals = useUpdateNodeInternals();
+  React.useEffect(() => {
+    updateNodeInternals(id);
+  }, [id, hideConnections, updateNodeInternals]);
   return (
     // THE single sized unit. No explicit width/height here = the default `w-56`, height
     // auto (grows to content). An explicit resize sets BOTH dimensions here directly —
     // there is nowhere else in this tree that ever gets its own independent size.
     <div
       className={cn(
-        "group relative flex w-56 flex-col overflow-visible rounded-lg p-0.5 ring-2 ring-transparent",
+        "group relative flex w-56 flex-col overflow-visible rounded-lg p-0.5",
         "transition-all duration-fast ease-standard",
         RIBBON_BG_CLASSES[accent],
-        // Round 6 / ADR-0075: the selected/hover ring lives HERE, on the single outer
-        // container that already wraps both the ribbon header and the white body — so
-        // selecting/hovering a card highlights it as one visual unit (header peek
-        // included), not just the body underneath, and its color derives from the
-        // card's OWN accent rather than one universal brand-blue ring.
+        // ADR-0075: the ring lives on this OUTER container (ribbon + body together) so
+        // hovering/selecting highlights the whole card as one unit, not just the body —
+        // "whole node card should look like selected" (Istiyak). Selected wins over the
+        // hover ring rather than stacking with it.
         selected ? RIBBON_RING_SELECTED_CLASSES[accent] : RIBBON_RING_HOVER_CLASSES[accent]
       )}
       style={hasExplicitSize ? { width, height } : undefined}
     >
+      {/* Connection handles (Phase 3, TF-06) — "Colored connector/handle dot from the
+          reference deliberately deferred" (ADR-0071) until drag-to-connect actually
+          existed; it does now. One target (left) + one source (right) per card, the
+          same left-to-right convention React Flow's own examples use, colored from the
+          card's own accent so a board with several node types still reads which handle
+          belongs to which card once two are close together. Faint at rest, fully opaque
+          on card hover — a permanently loud dot on every idle card would be worse
+          clutter than the earlier "deliberately deferred" blank edge was. React Flow's
+          base stylesheet sets its own size/border/color with enough specificity that a
+          plain Tailwind class loses to it, same reasoning as the resize handle's
+          `!`-prefixed overrides below. Hidden entirely once this card has a parent
+          (`hideConnections`) — see that prop's own doc comment above. */}
+      {!hideConnections ? (
+        <>
+          <Handle
+            type="target"
+            position={Position.Left}
+            className={cn(
+              "!size-3 !border-2 !border-background-surface opacity-50 transition-opacity duration-fast",
+              "group-hover:opacity-100",
+              RIBBON_SOLID_CLASSES[accent]
+            )}
+          />
+          <Handle
+            type="source"
+            position={Position.Right}
+            className={cn(
+              "!size-3 !border-2 !border-background-surface opacity-50 transition-opacity duration-fast",
+              "group-hover:opacity-100",
+              RIBBON_SOLID_CLASSES[accent]
+            )}
+          />
+        </>
+      ) : null}
       {/* Header row — an ordinary in-flow flex child sized to its own content
           (`shrink-0`), sitting directly on the container's own colored background.
           Never absolutely positioned, never sized separately from the body below it.
@@ -242,13 +302,19 @@ export const NodeChrome = React.memo(function NodeChrome({
           corner. Matching the outer's own `rounded-lg` here removes that mismatch. */}
       <div
         className={cn(
-          "relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border-default bg-background-surface shadow-surface",
-          // Round 6 / ADR-0075: this used to carry its OWN selected/hover border+shadow
-          // color (generic brand-blue) on top of the outer container's. Now the outer
-          // container owns the one colored selection/hover ring (see above) and this
-          // inner body just gets a plain neutral border plus a mild elevation bump on
-          // hover — no second, differently-colored highlight competing with the first.
-          "transition-all duration-fast ease-standard hover:shadow-surface-raised",
+          // Round 7 (Istiyak: "inner body area is having a gray border which don't suits
+          // well"): ADR-0075 had dropped this body's own selected/hover COLOR but still
+          // left it a permanent neutral `border-border-default` at all times — visible as
+          // a flat gray line hugging the body's edge on every card, selected or not,
+          // which is exactly what read as "doesn't suit well." The outer container above
+          // already draws the card's one true edge (its own ring, colored on
+          // selected/hover, and the pale ribbon's own background peeking through the
+          // `p-0.5` gap the rest of the time) — this body never needed a second, always-on
+          // border of its own; `shadow-surface` alone is enough to lift it off the ribbon
+          // behind it.
+          "relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg bg-background-surface shadow-surface",
+          "transition-shadow duration-fast ease-standard",
+          "hover:shadow-surface-raised",
           hasExplicitSize && "scrollbar-thin overflow-y-auto",
           className
         )}
@@ -275,8 +341,14 @@ export const NodeChrome = React.memo(function NodeChrome({
           title="Delete"
           className={cn(
             "nodrag absolute -top-4 -right-4 z-10 flex size-5 items-center justify-center rounded-full",
-            "bg-background-surface/90 text-text-muted",
-            "opacity-0 transition-opacity duration-fast hover:text-text-secondary",
+            // ADR-0075 (restored): this used to carry a `border` + `shadow-surface-raised`
+            // and turn red (`text-text-danger`) on hover — a "loud" treatment that read as
+            // its own competing accent against each card's own ribbon color. Flattened to a
+            // quiet, borderless, shadowless neutral chip that only deepens from secondary
+            // to primary text color on hover — still clearly a button, never a second
+            // "accent" fighting the card's own.
+            "bg-background-surface text-text-secondary",
+            "opacity-0 transition-opacity duration-fast hover:text-text-primary",
             "group-hover:opacity-100 group-focus-within:opacity-100"
           )}
         >
