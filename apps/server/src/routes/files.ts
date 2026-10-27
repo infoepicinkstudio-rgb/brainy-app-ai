@@ -29,6 +29,30 @@ function extOf(filename: string): string {
   return dot === -1 ? "" : filename.slice(dot + 1).toLowerCase();
 }
 
+// Phase 3 bug-fix round (Istiyak: "IF file type doesn't supported then it should not
+// have come to board... mp3 mp4 html certain files not supported yet"). The real,
+// user-facing gate is client-side (board-store.ts's `isSupportedFileType`, checked
+// BEFORE this route is even called, so the user sees a toast instantly with no upload
+// round-trip) — this is the server-side backstop for any caller that skips that check,
+// kept in sync with the same extension set (and with extraction.ts's own
+// `IMAGE_EXTENSIONS`/`supported` lists, which this was already duplicating one layer
+// down).
+const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
+  "pdf",
+  "doc",
+  "docx",
+  "xls",
+  "xlsx",
+  "jpg",
+  "jpeg",
+  "png",
+  "gif",
+  "webp",
+  "svg",
+  "bmp",
+  "heic",
+]);
+
 export type FileKind = "pdf" | "docx" | "xlsx" | "image" | "other";
 
 // Round 2 (Istiyak: "File uploads should get type-specific visual treatment by file
@@ -52,7 +76,15 @@ export async function filesRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "No file was uploaded." });
     }
 
+    // `file.toBuffer()` fully drains the multipart stream — this must happen before
+    // any early return below, or the request's body stream is left unconsumed
+    // (@fastify/multipart expects every part to be read out, buffer or not).
     const buffer = await file.toBuffer();
+
+    if (!SUPPORTED_UPLOAD_EXTENSIONS.has(extOf(file.filename))) {
+      return reply.code(415).send({ error: `"${file.filename}" isn't a supported file type yet.` });
+    }
+
     if (buffer.byteLength === 0) {
       return reply.code(400).send({ error: "The uploaded file is empty." });
     }

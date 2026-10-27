@@ -47,6 +47,7 @@ export function BoardCard({
   roundedTop,
   roundedBottom,
   onRename,
+  onDuplicate,
   onMoveToFolder,
   onDelete,
   onToggleFavorite,
@@ -66,6 +67,7 @@ export function BoardCard({
   roundedTop?: boolean;
   roundedBottom?: boolean;
   onRename?: () => void;
+  onDuplicate?: () => void;
   onMoveToFolder?: (folderId: string | null) => void;
   onDelete?: () => void;
   onToggleFavorite?: () => void;
@@ -159,6 +161,7 @@ export function BoardCard({
             board={board}
             folders={folders}
             onRename={onRename ?? (() => {})}
+            onDuplicate={onDuplicate}
             onMoveToFolder={onMoveToFolder ?? (() => {})}
             onDelete={onDelete ?? (() => {})}
           />

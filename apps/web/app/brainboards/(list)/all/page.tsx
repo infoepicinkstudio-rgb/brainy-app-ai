@@ -94,6 +94,15 @@ function BoardsListContent() {
     await api.patch(`/api/boards/${boardId}`, { folder_id: folderId });
   }
 
+  // Phase 3, F-07: "duplicate an entire board." The server does the actual
+  // copy-everything-under-new-ids work in one route (boards.ts) — this just calls it
+  // and drops the result straight into local state (same `setBoards` pattern as every
+  // other optimistic action on this page) rather than a full `load()` refetch.
+  async function handleDuplicateBoard(boardId: string) {
+    const { board: created } = await api.post<{ board: BoardSummary }>(`/api/boards/${boardId}/duplicate`);
+    setBoards((prev) => (prev ? [created, ...prev] : [created]));
+  }
+
   async function handleDeleteBoard(boardId: string) {
     setBoards((prev) => prev?.filter((b) => b.id !== boardId) ?? prev);
     await api.post(`/api/boards/${boardId}/trash`);
@@ -174,6 +183,7 @@ function BoardsListContent() {
                 roundedTop={index === 0}
                 roundedBottom={index === visibleBoards.length - 1}
                 onRename={() => setRenamingBoard(board)}
+                onDuplicate={() => handleDuplicateBoard(board.id)}
                 onMoveToFolder={(folderId) => handleMoveToFolder(board.id, folderId)}
                 onDelete={() => handleDeleteBoard(board.id)}
                 onToggleFavorite={() => handleToggleFavorite(board.id, !board.is_favorite)}

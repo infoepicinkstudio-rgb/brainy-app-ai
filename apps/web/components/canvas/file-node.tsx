@@ -18,20 +18,19 @@ import { cn } from "@/lib/utils";
 // design, matching the F-16 manual-notes pattern instead).
 //
 // Node-card-overhaul pass (ADR-0065): "Open file" moved from a standalone footer link
-// into the header's 3-dot menu; deletion is Delete-key, that menu, or (round 2,
-// ADR-0068) the hover-only "X".
+// into the body's own "Download <size>" row (below) — there is no header menu at all
+// (ADR-0075); deletion is Delete-key or NodeChrome's own hover-only "X".
 //
-// Round 2 (ADR-0069): icon varies by `fileKind` (set server-side at upload time,
-// files.ts) so a PDF/Word/Excel/image/other file is visually distinguishable at a
-// glance. ADR-0071 (round 2) then unified the ribbon COLOR to one consistent "document"
-// orange across every non-image kind, favoring a newer reference screenshot over the
-// original per-kind-color ask. Round 6 (ADR-0075) REVERSES that call, per Istiyak's
-// explicit new instruction: "Document type should have exact file type feel... Excel is
-// uploaded but its not giving a feel of excel." Per-kind color is restored — PDF=red,
-// Word(docx)=blue, Excel(xlsx)=green, matching the familiar Office-suite color
-// convention (a widely recognized visual language for these file types generally, not
-// any one brand's specific logo/mark) — image and other/unrecognized files stay neutral
-// gray, since there's no equivalent "type color" convention for either.
+// Round 2 (ADR-0069) gave each fileKind its own icon. Accent COLOR went through two
+// reversals since: ADR-0071 unified every non-image document to one flat "warning"
+// amber; ADR-0075 (Istiyak, explicit: "Document type should have exact file type
+// feel... Excel is uploaded but its not giving a feel of excel") restored the familiar
+// Office-suite per-kind colors — PDF red, Word blue, Excel green — matching a widely
+// recognized visual language for file types generally, not any one brand's specific
+// logo/mark. Restored again here after the live code had drifted back to ADR-0071's
+// flat scheme (Phase 3 testing, Istiyak: "All documents and link cards looks the same
+// shade" — this flat amber reading the same as every other document was exactly why).
+// Images keep their own thumbnail as the primary visual identity (neutral ribbon).
 const FILE_KIND_ICON: Record<FileNodeData["fileKind"], LucideIcon> = {
   pdf: FileText,
   docx: FileText,
@@ -45,14 +44,15 @@ const FILE_KIND_ACCENT: Record<FileNodeData["fileKind"], NodeAccent> = {
   docx: "info",
   xlsx: "success",
   image: "neutral",
-  other: "neutral",
+  other: "warning",
 };
 
-function FileNodeImpl({ id, data, selected }: NodeProps) {
+function FileNodeImpl({ id, data, selected, parentId }: NodeProps) {
   const typedData = data as FileNodeData;
   const updateNodeData = useBoardStore((state) => state.updateNodeData);
   const flushNodeData = useBoardStore((state) => state.flushNodeData);
   const deleteNode = useBoardStore((state) => state.deleteNode);
+  const duplicateSelection = useBoardStore((state) => state.duplicateSelection);
   const fileUrl = `${API_BASE_URL}/api/files/${typedData.storedName}`;
   // Legacy nodes created before ADR-0069 (fileKind didn't exist yet) fall back to a
   // sensible guess from isImage rather than rendering with no icon/color at all.
@@ -64,6 +64,7 @@ function FileNodeImpl({ id, data, selected }: NodeProps) {
 
   return (
     <NodeChrome
+      id={id}
       selected={selected}
       accent={FILE_KIND_ACCENT[fileKind]}
       header={
@@ -77,17 +78,26 @@ function FileNodeImpl({ id, data, selected }: NodeProps) {
         <NodeHeader
           icon={FILE_KIND_ICON[fileKind]}
           label="Documents"
-          onOpen={() => window.open(fileUrl, "_blank", "noopener,noreferrer")}
-          openLabel="Open file"
+          // Istiyak (Phase 3 testing): the header's "go to" icon should be a LINK-card
+          // thing only. Omitting `onOpen` here loses nothing — the body already has its
+          // own "Download <size>" row (below) for documents, and an image file's
+          // thumbnail is already visible inline, so there was no unique capability only
+          // that button offered. Deletion lives exclusively in NodeChrome's own
+          // hover-only "X" (ADR-0075) — never passed to the header itself.
+          onDuplicate={() => duplicateSelection([id])}
         />
       }
       width={explicitWidth}
       height={explicitHeight}
       onDelete={() => deleteNode(id)}
-      // Round 6 (Istiyak: "Apart from text none of the node cards needed resize") — no
-      // longer passed here, so `NodeChrome` never renders a resize handle for this type.
-      // `width`/`height` above still honor a size persisted by an earlier round, for any
-      // file card resized before this change.
+      hideConnections={Boolean(parentId)}
+      // ADR-0075 (Istiyak: "Apart from text none of the node cards needed resize"): no
+      // `onResizeEnd` here — NodeChrome only renders the resize handle when selected AND
+      // this prop is provided, so omitting it is the off-switch. A card resized before
+      // this restriction still renders at its saved cardWidth/cardHeight above; it just
+      // can't be resized further. Restored after drifting back to resizable-everywhere
+      // (Phase 3 testing, Istiyak: "Resizer came back to all card types. Which we
+      // decided to remove.").
     >
       {typedData.isImage ? (
         <>

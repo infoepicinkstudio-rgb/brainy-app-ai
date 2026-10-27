@@ -5,7 +5,7 @@
 // click-outside + Escape-to-close shape as components/layout/profile-menu.tsx (the
 // established pattern for this app's only other dropdown menu).
 import * as React from "react";
-import { Check, Folder, FolderX, type LucideIcon, MoreVertical, Pencil, Trash2 } from "lucide-react";
+import { Check, Copy, Folder, FolderX, type LucideIcon, MoreVertical, Pencil, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { BoardSummary } from "@/components/boards/board-card";
 import type { FolderSummary } from "@/stores/folders-store";
@@ -14,12 +14,16 @@ export function BoardRowMenu({
   board,
   folders,
   onRename,
+  onDuplicate,
   onMoveToFolder,
   onDelete,
 }: {
   board: BoardSummary;
   folders: FolderSummary[];
   onRename: () => void;
+  // Phase 3, F-07: "duplicate an entire board." Optional (not every caller that reuses
+  // this menu necessarily wants it wired up), rendered right under "Rename" when given.
+  onDuplicate?: () => void;
   onMoveToFolder: (folderId: string | null) => void;
   onDelete: () => void;
 }) {
@@ -77,6 +81,18 @@ export function BoardRowMenu({
           >
             Rename
           </MenuButton>
+
+          {onDuplicate ? (
+            <MenuButton
+              icon={Copy}
+              onClick={() => {
+                onDuplicate();
+                setIsOpen(false);
+              }}
+            >
+              Duplicate
+            </MenuButton>
+          ) : null}
 
           <div className="my-1 border-t border-border-muted" />
           <div className="px-3 py-1.5 text-xs font-medium text-text-muted">Move to folder</div>

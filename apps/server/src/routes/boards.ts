@@ -155,6 +155,56 @@ export async function boardsRoutes(app: FastifyInstance) {
     return { board: updated };
   });
 
+  // Duplicate an entire board (Phase 3, F-07: "duplicate a board — confirm the
+  // duplicate is fully independent of the original"). Every node and edge is
+  // re-inserted under brand-new ids on a brand-new board row — nothing is shared with
+  // the source, so editing/deleting either board afterward never touches the other.
+  // `parent_node_id` (grouping) is remapped through the same id map as every other
+  // reference, same reasoning as board-store.ts's own duplicate/paste on the frontend.
+  app.post<{ Params: { id: string } }>("/api/boards/:id/duplicate", async (request, reply) => {
+    const { id } = request.params;
+    const [board] = await db.select().from(boards).where(eq(boards.id, id));
+    if (!board) return reply.code(404).send({ error: "Board not found." });
+
+    const [newBoard] = await db
+      .insert(boards)
+      .values({ title: `${board.title} (copy)`, folder_id: board.folder_id })
+      .returning();
+
+    const sourceNodes = await db.select().from(nodes).where(eq(nodes.board_id, id));
+    const idMap = new Map<string, string>();
+    for (const n of sourceNodes) idMap.set(n.id, crypto.randomUUID());
+
+    // Parent-before-child insert order — a group row must already exist before any
+    // child row's `parent_node_id` FK can point at it, the same ordering requirement
+    // React Flow enforces at render time (page.tsx), just applied here at insert time.
+    const orderedNodes = [
+      ...sourceNodes.filter((n) => n.type === "group"),
+      ...sourceNodes.filter((n) => n.type !== "group"),
+    ];
+    for (const n of orderedNodes) {
+      await db.insert(nodes).values({
+        id: idMap.get(n.id),
+        board_id: newBoard.id,
+        type: n.type,
+        position_x: n.position_x,
+        position_y: n.position_y,
+        parent_node_id: n.parent_node_id ? idMap.get(n.parent_node_id) ?? null : null,
+        data: n.data,
+      });
+    }
+
+    const sourceEdges = await db.select().from(edges).where(eq(edges.board_id, id));
+    for (const e of sourceEdges) {
+      const source_node_id = idMap.get(e.source_node_id);
+      const target_node_id = idMap.get(e.target_node_id);
+      if (!source_node_id || !target_node_id) continue; // defensive — shouldn't happen, every edge's nodes came from this same board
+      await db.insert(edges).values({ board_id: newBoard.id, source_node_id, target_node_id });
+    }
+
+    return reply.code(201).send({ board: newBoard });
+  });
+
   // Soft-delete -> Trash.
   app.post<{ Params: { id: string } }>("/api/boards/:id/trash", async (request, reply) => {
     const { id } = request.params;
