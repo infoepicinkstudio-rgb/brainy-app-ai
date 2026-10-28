@@ -22,7 +22,10 @@ export interface ModelInfo {
 /** One connected node's resolved content, assembled server-side (context-assembly.ts)
  * before being handed to an adapter — the adapter itself never queries the DB. */
 export interface ContextItem {
-  nodeType: "text" | "file" | "link" | "chat";
+  // "video"/"audio" added for Phase 5 (ADR-0085/ADR-0086) — video and audio nodes now
+  // resolve a lazily-extracted transcript the same way file/link nodes already resolve
+  // their own content (context-assembly.ts's `resolveMediaNode`).
+  nodeType: "text" | "file" | "link" | "chat" | "video" | "audio";
   /** A short human label for where this content came from (file name, link domain,
    * "Connected text node") — adapters that build a labeled prompt use this; adapters
    * that don't can ignore it. */

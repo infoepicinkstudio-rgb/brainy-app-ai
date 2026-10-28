@@ -192,17 +192,18 @@
 
 ---
 
-### F-14 — Lazy video transcript extraction
+### F-14 — Lazy audio/video/link transcript extraction
 **Task Flow:** TF-05, TF-08 (`prd.md` §4) · **Tier:** Must-have · **Phase:** 5
-**What it does:** The yt-dlp → ffmpeg → Whisper pipeline, run only on demand and cached.
+**What it does:** The yt-dlp → ffmpeg → Whisper pipeline, run only on demand and cached. Originally scoped to video nodes only; widened in Phase 5's actual build to also cover audio nodes (F-30), uploaded video files (F-30), and link nodes (F-27) — one shared pipeline and one shared cache, not three separate implementations (ADR-0085/ADR-0086/ADR-0087).
 
 **User flows (Level 2):**
-- **Happy path — first use:** A chat node needs a connected video node's content for the first time → backend checks `extraction_cache` (miss) → runs the full pipeline → writes the result to cache → uses it immediately.
-- **Happy path — repeat use:** Same source URL requested again (same or a different chat node on the same or another board) → cache hit → no pipeline run, instant use.
-- **Extraction fails (private video, deleted video, unsupported platform quirk):** Chat node shows a clear "couldn't extract this video's content" state and the conversation can continue without that node's deep content rather than blocking entirely.
-- **Extraction is slow:** Visible in-progress state (not a frozen UI) — this is precisely the scenario the separate-backend-process architecture decision (ADR-0013) exists to keep from freezing anything else.
+- **Happy path — first use:** A chat node needs a connected video/audio/link node's content for the first time → backend checks `extraction_cache` (miss, keyed by URL or by the uploaded file's content hash) → runs the full pipeline → writes the result to cache → uses it immediately.
+- **Happy path — repeat use:** Same source (same URL, or the same uploaded file re-referenced from another node) requested again, on the same or another board → cache hit → no pipeline run, instant use.
+- **Extraction fails (private/deleted video, unsupported platform quirk, corrupt upload, a link that isn't actually a media URL):** Chat node shows a clear "couldn't extract this content" state and the conversation can continue without that node's deep content rather than blocking entirely. For a `link` node specifically, this isn't really a *failure* state — it's the expected outcome for most links (an article, a LinkedIn post), and the node quietly falls back to being an F-27 notes-only reference.
+- **Extraction is slow:** Visible in-progress state (not a frozen UI), surfaced through the chat node's existing SSE stream as an `"extracting"` event — this is precisely the scenario the separate-backend-process architecture decision (ADR-0013) exists to keep from freezing anything else.
+- **Manual override:** A "Re-extract" action on the node forces a fresh pipeline run regardless of what's cached — the one path that bypasses "cache forever" (ADR-0044's confirmed caching strategy), for a source whose content has genuinely changed or that failed before and is worth retrying.
 
-**References:** `architecture.md` §4.4 · ADR-0013, ADR-0044
+**References:** `architecture.md` §4.4 · ADR-0013, ADR-0044, ADR-0085, ADR-0086, ADR-0087, ADR-0088
 
 ---
 
@@ -243,11 +244,27 @@
 
 **User flows (Level 2):**
 - **Happy path:** Paste a URL → node renders with the raw URL and an editable title (no automated metadata fetch — this is deliberate, see below) → an optional free-text area lets the user manually paste the page's actual content (e.g. the LinkedIn post text) if they want it available as AI context.
-- **No automated scraping, by design:** Unlike F-10's YouTube/Instagram metadata fetch, this node never attempts to scrape the target page — confirmed earlier in scoping that automated LinkedIn (and most non-YouTube platform) scraping is infeasible. The node is honestly a manual reference, not a disguised scraper.
-- **Empty notes:** A link with no manually-pasted content is still a valid node (just the URL/title) — omitted entirely from context assembly rather than sent as empty content, same convention as F-16.
+- **No automated PAGE scraping, by design — still true:** This node never attempts to scrape a target page's text/HTML (a LinkedIn post, an article) — confirmed earlier in scoping that automated LinkedIn (and most non-YouTube platform) scraping is infeasible. The node is honestly a manual reference for that case, not a disguised scraper.
+- **Media extraction, added in Phase 5 (ADR-0087, amends but doesn't reverse the above):** A link node's URL IS now attempted against the same lazy yt-dlp pipeline F-14 uses for video/audio — if the link resolves to actual downloadable media (any yt-dlp-supported URL, not just YouTube), the first chat reference transcribes it exactly like a video/audio node would. If it doesn't (an article, a LinkedIn post, anything yt-dlp can't handle), the attempt fails quietly and the node behaves exactly as before — a manual, notes-only reference. The user never sees this as a visible failure for an ordinary link; it's just how the node resolves what it can.
+- **Empty notes:** A link with no manually-pasted content and no extractable media is still a valid node (just the URL/title) — omitted entirely from context assembly rather than sent as empty content, same convention as F-16.
 - **Click-through:** Clicking the node opens the original URL in a new tab.
 
-**References:** `architecture.md` §4.3 · ADR-0053
+**References:** `architecture.md` §4.3 · ADR-0053, ADR-0087
+
+---
+
+### F-30 — Audio nodes + uploaded video files
+**Task Flow:** TF-05, TF-08 (`prd.md` §4) · **Tier:** Must-have · **Phase:** 5
+**What it does:** Upload a local audio file (mp3/wav/m4a/ogg/flac/aac) to get a dedicated `audio` node, or a local video file (mp4/mov/webm/mkv/avi) to get the same `video` node F-10 already uses for links — both get a transcript the same lazy way (F-14), rather than silently falling into the generic document `file` node (F-26) they didn't belong in. Scoped with Istiyak at the start of this phase (ADR-0085/ADR-0086), since `claude/phase-4-status.md` had explicitly left this open.
+
+**User flows (Level 2):**
+- **Happy path — audio upload:** Drag/drop, OS-paste, or toolbar-pick an audio file → the existing file-upload entry points (same ones F-26 uses) detect the audio extension server-side and create an `audio` node instead of a `file` node → no extraction happens yet, same as a freshly-pasted video link.
+- **Happy path — video upload:** Same three entry points, a video extension → creates a `video` node (not a new node type) with `source: "upload"` — visually and functionally the same card type a pasted YouTube link produces, just without oEmbed thumbnail/title (those fields are simply absent for an upload-sourced video node).
+- **First chat reference:** Identical to F-14's video-node flow — lazy, cached, in-progress state, failure state all shared with video/link nodes rather than reimplemented.
+- **Unsupported audio/video extension:** Same client-side gate F-26 already uses (`isSupportedFileType`) — an unsupported type never reaches the board, consistent toast message.
+- **Why not the generic `file` node:** Settled explicitly this phase — neither audio nor video uploads need in-app preview/playback or document-style extraction (pdf-parse/mammoth/xlsx); both just need a transcript, which is what F-14's pipeline already produces for every other media source.
+
+**References:** `architecture.md` §4.3, §4.4 · ADR-0044, ADR-0085, ADR-0086
 
 ---
 

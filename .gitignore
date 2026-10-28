@@ -14,6 +14,15 @@ backups/
 # brainy.db; content-addressed by sha256, never committed
 /uploads/
 
+# Whisper.cpp GGML model file (Phase 5, ADR-0088) — a multi-hundred-MB binary Istiyak
+# downloads himself; not source, never committed, same tier as node_modules/.
+/models/
+
+# yt-dlp.exe / ffmpeg.exe (Phase 5, ADR-0088) — standalone binaries Istiyak downloads
+# himself into tools/, same tier as /models/ above. tools/scripts/ (the tracked
+# backup-db.mjs helper) is unaffected — this only matches .exe files directly in tools/.
+/tools/*.exe
+
 # Secrets
 .env
 .env.local

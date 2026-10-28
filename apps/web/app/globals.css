@@ -203,3 +203,40 @@ button:disabled {
 .react-flow {
   background-color: var(--color-background-canvas) !important;
 }
+
+/* Extraction-in-progress shimmer (ADR-0091, Istiyak: "Add shining skeleton shimmer
+   style animation... I am not able to see where i have reached or done" — the
+   yt-dlp/ffmpeg/whisper pipeline reports no real step-by-step progress at all
+   (media-extraction.ts's own transcribe() call has no progress callback this app
+   reads), so this can't show a literal percentage. What it CAN do is give a
+   constant, visibly-alive "this is actively working, not frozen" signal for
+   however long the real pipeline takes — a light sweep moving across a muted bar,
+   used by node-extraction-status.tsx's "pending" state. prefers-reduced-motion is
+   respected: falls back to a static muted bar, no sweep. */
+@keyframes shimmer-sweep {
+  from {
+    background-position: -150% 0;
+  }
+  to {
+    background-position: 150% 0;
+  }
+}
+
+.shimmer-bar {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-background-muted) 25%,
+    var(--color-background-surface-raised) 50%,
+    var(--color-background-muted) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer-sweep 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-bar {
+    animation: none;
+    background-image: none;
+    background-color: var(--color-background-muted);
+  }
+}

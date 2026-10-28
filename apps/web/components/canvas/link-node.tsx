@@ -7,6 +7,7 @@ import { useBoardStore, type LinkNodeData } from "@/stores/board-store";
 import { NodeChrome } from "@/components/canvas/node-chrome";
 import { NodeHeader } from "@/components/canvas/node-header";
 import { NodeNotesField } from "@/components/canvas/node-notes-field";
+import { NodeExtractionStatus } from "@/components/canvas/node-extraction-status";
 import { parseVideoUrl } from "@/lib/video-platform";
 
 // TF-13 — generic link/reference node (F-27). Still does no scraping of a page's actual
@@ -37,6 +38,7 @@ function LinkNodeImpl({ id, data, selected, parentId }: NodeProps) {
   const duplicateSelection = useBoardStore((state) => state.duplicateSelection);
   const convertLinkNodeToVideo = useBoardStore((state) => state.convertLinkNodeToVideo);
   const refreshLinkPreview = useBoardStore((state) => state.refreshLinkPreview);
+  const startExtraction = useBoardStore((state) => state.startExtraction);
 
   // Legacy-data-safe reads — nodes created before ADR-0067 have a URL/title/notes but
   // none of these newer fields, so every read here has a sensible fallback rather than
@@ -76,6 +78,10 @@ function LinkNodeImpl({ id, data, selected, parentId }: NodeProps) {
     if (metaForUrl !== typedData.url && status === "idle") {
       refreshLinkPreview(id, typedData.url);
     }
+    // ADR-0091 — start extraction the moment a link card with a committed, non-video
+    // URL is known (covers the "already had a URL on load" case; the video branch
+    // above is covered by convertLinkNodeToVideo's own trigger instead).
+    startExtraction(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -92,8 +98,14 @@ function LinkNodeImpl({ id, data, selected, parentId }: NodeProps) {
     }
     if ((typedData.metaForUrl ?? "") !== typedData.url) {
       refreshLinkPreview(id, typedData.url);
+      // ADR-0091 — a freshly typed/changed non-video URL just committed; start
+      // extraction right away rather than waiting for a chat node to reference it.
+      // Gated the same as the refresh above so re-blurring an unchanged URL doesn't
+      // needlessly re-POST (the server-side cache would make it cheap either way, but
+      // there's no reason to even make the call when nothing actually changed).
+      startExtraction(id);
     }
-  }, [id, typedData.url, typedData.metaForUrl, flushNodeData, convertLinkNodeToVideo, refreshLinkPreview]);
+  }, [id, typedData.url, typedData.metaForUrl, flushNodeData, convertLinkNodeToVideo, refreshLinkPreview, startExtraction]);
 
   // Round 2 (Istiyak: "on link edit i still need to press enter to get back that to
   // preview. On canvas click that still don't go automatically to preview mode"): Enter
@@ -238,6 +250,19 @@ function LinkNodeImpl({ id, data, selected, parentId }: NodeProps) {
           )}
         </div>
       ) : null}
+
+      {/* ADR-0087 — a link node is now ALSO attempted against the lazy media pipeline
+          (F-14); `quietOnUnextracted` keeps this silent for the common case (an
+          ordinary article/LinkedIn-post URL that was never actually media), so it only
+          appears once extraction has genuinely been attempted for this source. */}
+      <div className="px-2.5 py-1">
+        <NodeExtractionStatus
+          nodeId={id}
+          status={typedData.extractionStatus}
+          preview={typedData.extractionPreview}
+          quietOnUnextracted
+        />
+      </div>
 
       <NodeNotesField
         value={typedData.notes}

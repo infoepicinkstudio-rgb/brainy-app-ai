@@ -15,6 +15,13 @@ export type ChatStreamEvent =
   | { type: "thinking"; text: string }
   | { type: "search_query"; query: string }
   | { type: "search_results"; results: { url: string; title: string }[] }
+  // Phase 5 (ADR-0044/ADR-0085/ADR-0086/ADR-0087) — emitted by chat.ts mid-`assembleContext`
+  // when a connected video/audio/link node's content isn't cached yet and the lazy
+  // pipeline is about to run for it. Purely informational (never terminates the
+  // stream) — chat-node.tsx shows it as an in-progress line, and once a `done`/`error`
+  // eventually arrives, triggers a `refreshNodesData([nodeId])` so that node's own card
+  // picks up its new transcript/status without a full board reload.
+  | { type: "extracting"; nodeId: string; label: string }
   | { type: "done" }
   | { type: "error"; message: string };
 

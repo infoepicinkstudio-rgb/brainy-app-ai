@@ -1,6 +1,18 @@
 // Brainy backend entry point — Fastify. architecture.md §4.1: owns all DB reads/writes,
 // AI provider calls, and yt-dlp/ffmpeg/transcription jobs, so none of that blocks the UI thread.
 
+// BUG-026 fix, take 2: the earlier attempt used Node's native `--env-file=.env` flag on
+// the `dev`/`start` scripts instead of a real dependency — reliable in isolation, but it
+// turned out to re-break silently any time the npm script itself reverted (confirmed via
+// a live diff of the file on disk: "dev": "tsx watch src/index.ts" with no flag, after
+// Istiyak had done nothing more unusual than normal terminal use) — a one-line flag with
+// no code trace is invisible to notice going missing. `dotenv` is a real, visible,
+// version-controlled dependency instead: this import MUST stay the very first import in
+// this file (ESM evaluates sibling imports in the order they're written, each one fully
+// before the next — this guarantees `.env` is loaded into `process.env` before ANY other
+// imported module's own top-level code runs, including media-extraction.ts's and
+// ollama.ts's own `process.env.YTDLP_PATH`/`FFMPEG_PATH`/`OLLAMA_BASE_URL` reads).
+import "dotenv/config";
 import Fastify, { type FastifyError } from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";

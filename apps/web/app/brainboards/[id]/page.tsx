@@ -27,6 +27,7 @@ import { TextNode } from "@/components/canvas/text-node";
 import { FileNode } from "@/components/canvas/file-node";
 import { LinkNode } from "@/components/canvas/link-node";
 import { VideoNode } from "@/components/canvas/video-node";
+import { AudioNode } from "@/components/canvas/audio-node";
 import { GroupNode } from "@/components/canvas/group-node";
 import { ChatNode } from "@/components/canvas/chat-node";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
@@ -41,6 +42,7 @@ const nodeTypes: NodeTypes = {
   file: FileNode,
   link: LinkNode,
   video: VideoNode,
+  audio: AudioNode,
   chat: ChatNode,
   [RF_GROUP_TYPE]: GroupNode,
 };
@@ -133,6 +135,7 @@ function CanvasShell({ boardId }: { boardId: string }) {
     duplicateSelection,
     copySelection,
     pasteClipboard,
+    hasClipboardContent,
     deselectAllNodes,
     undo,
     redo,
@@ -317,15 +320,40 @@ function CanvasShell({ boardId }: { boardId: string }) {
         // Paste (Phase 3, F-19) — materializes whatever's in OUR clipboard onto
         // whichever board is currently loaded (works across a board switch precisely
         // because that clipboard lives outside this store's per-board state — see its
-        // own comment in board-store.ts). A no-op if nothing's been copied yet, so this
-        // never fights with the native OS-paste handler below over an empty selection.
-        event.preventDefault();
-        pasteClipboard(centerPosition());
+        // own comment in board-store.ts).
+        //
+        // BUG-028 fix: this used to call `event.preventDefault()` unconditionally, on
+        // EVERY Ctrl+V, regardless of whether our own clipboard actually had anything
+        // in it — the comment here claimed that made it "a no-op... [that] never fights
+        // with the native OS-paste handler below," but `preventDefault()` on this
+        // `keydown` event runs BEFORE the browser ever generates the native `paste`
+        // event that handler listens for, so an empty internal clipboard was silently
+        // swallowing every single Ctrl+V on bare canvas — including the one the OTHER
+        // paste handler below needs to create a link/video/text node from whatever's
+        // actually on the OS clipboard (Istiyak: "copy paste on canvas doesn't work").
+        // Mirrors the "c" (copy) branch above: only intercept when there's actually
+        // something of OURS to act on; an empty clipboard now falls straight through to
+        // the native paste event instead of being eaten here first.
+        if (hasClipboardContent()) {
+          event.preventDefault();
+          pasteClipboard(centerPosition());
+        }
       }
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [undo, redo, getNodes, groupSelectedNodes, ungroupNode, duplicateSelection, copySelection, pasteClipboard, centerPosition]);
+  }, [
+    undo,
+    redo,
+    getNodes,
+    groupSelectedNodes,
+    ungroupNode,
+    duplicateSelection,
+    copySelection,
+    pasteClipboard,
+    hasClipboardContent,
+    centerPosition,
+  ]);
 
   // Paste-to-create (Istiyak: "paste a URL directly onto the canvas" originally did
   // nothing — he had to add a link node first, then paste inside it; round 2 widened
@@ -561,7 +589,10 @@ function CanvasShell({ boardId }: { boardId: string }) {
         // by default, and a user can usually still override it to "All Files," plus it
         // does nothing at all for drag-drop or OS paste. addFileNode's own check is
         // what actually blocks an unsupported type from reaching the board.
-        accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.gif,.webp,.svg,.bmp,.heic"
+        // Phase 5 (ADR-0085/ADR-0086): widened to include the new audio/video upload
+        // extensions, kept in sync with board-store.ts's AUDIO_UPLOAD_EXTENSIONS/
+        // VIDEO_UPLOAD_EXTENSIONS exactly as this already tracks SUPPORTED_FILE_EXTENSIONS.
+        accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.gif,.webp,.svg,.bmp,.heic,.mp3,.wav,.m4a,.ogg,.flac,.aac,.mp4,.mov,.webm,.mkv,.avi"
         className="hidden"
         onChange={handleFileChosen}
         disabled={isUploading}

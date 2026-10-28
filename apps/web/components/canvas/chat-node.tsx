@@ -275,6 +275,7 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
   const deleteNode = useBoardStore((state) => state.deleteNode);
   const duplicateSelection = useBoardStore((state) => state.duplicateSelection);
   const saveNodeSize = useBoardStore((state) => state.saveNodeSize);
+  const refreshNodesData = useBoardStore((state) => state.refreshNodesData);
 
   // Same ADR-0070 pattern every other node type uses — see text-node.tsx's own
   // comment for why this must read `data.cardWidth/cardHeight`, not NodeProps' own
@@ -354,6 +355,10 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
   const [streamingSearch, setStreamingSearch] = React.useState<{ query?: string; results?: { url: string; title: string }[] } | null>(
     null
   );
+  // Phase 5 (ADR-0044/ADR-0085/ADR-0086/ADR-0087) — the chat SSE stream's "extracting"
+  // event (chat.ts, mid-`assembleContext`). Label-only; which connected node(s) it fired
+  // for is tracked separately below so their cards can be refreshed once the turn ends.
+  const [streamingExtraction, setStreamingExtraction] = React.useState<{ nodeId: string; label: string } | null>(null);
   const [isSending, setIsSending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const lastPromptRef = React.useRef("");
@@ -363,7 +368,7 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
   React.useEffect(() => () => abortRef.current?.abort(), []);
   React.useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [messages, streamingText, streamingThinking, streamingSearch]);
+  }, [messages, streamingText, streamingThinking, streamingSearch, streamingExtraction]);
 
   // Per-message toggles (Istiyak: "websearch/thinking on/off") — deliberately NOT part
   // of ChatNodeData: these read as "how should THIS send behave," closer to the
@@ -372,6 +377,31 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
   // composer, not a saved preference).
   const [webSearchEnabled, setWebSearchEnabled] = React.useState(false);
   const [thinkingEnabled, setThinkingEnabled] = React.useState(false);
+
+  // Local LLM (Ollama) status — live, not static like the cloud providers' model lists,
+  // since what's actually usable depends on what's installed/running on Istiyak's own
+  // machine right now and that can change between page loads (apps/server/src/providers/
+  // ollama.ts's own comment has the full reasoning). Fetched once on mount, not only
+  // when execution mode is already "local", so switching INTO Local LLM mode shows a
+  // ready model list immediately rather than a blank dropdown for one extra round trip.
+  const [localStatus, setLocalStatus] = React.useState<{ available: boolean; models: { id: string; label: string }[] } | null>(null);
+  React.useEffect(() => {
+    api
+      .get<{ available: boolean; models: { id: string; label: string }[] }>("/api/providers/local-models")
+      .then(setLocalStatus)
+      .catch(() => setLocalStatus({ available: false, models: [] }));
+  }, []);
+
+  // Switching a node INTO Local LLM mode while it still holds a cloud model id (e.g.
+  // "claude-sonnet-5-5") would otherwise send that id straight to Ollama, which won't
+  // recognize it — this keeps `data.model` always valid for whichever mode is active,
+  // the same "never blocks on a choice" spirit F-12 already asks of the model selector.
+  React.useEffect(() => {
+    if (typedData.executionMode !== "local" || !localStatus || localStatus.models.length === 0) return;
+    const stillValid = localStatus.models.some((m) => m.id === typedData.model);
+    if (!stillValid) updateData({ model: localStatus.models[0].id });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when mode/status change, not on every model edit
+  }, [typedData.executionMode, localStatus]);
 
   async function handleNewConversation() {
     if (!boardId) return;
@@ -419,6 +449,7 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
     setStreamingText("");
     setStreamingThinking(null);
     setStreamingSearch(null);
+    setStreamingExtraction(null);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -426,6 +457,11 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
     let thinkingAccum = "";
     let searchAccum: { query?: string; results?: { url: string; title: string }[] } = {};
     let sawError: string | null = null;
+    // Phase 5 — every node id an "extracting" event named this turn, so their cards
+    // (video/audio/link, each showing their own NodeExtractionStatus) can be refreshed
+    // once the turn ends rather than staying on a stale "pending"/absent status until
+    // the next full board reload.
+    const extractedNodeIds = new Set<string>();
 
     for await (const event of streamChat(boardId, id, text, {
       sessionId,
@@ -446,10 +482,17 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
       } else if (event.type === "search_results") {
         searchAccum = { ...searchAccum, results: event.results };
         setStreamingSearch(searchAccum);
+      } else if (event.type === "extracting") {
+        extractedNodeIds.add(event.nodeId);
+        setStreamingExtraction({ nodeId: event.nodeId, label: event.label });
       } else if (event.type === "error") {
         sawError = event.message;
       }
       // "done" needs no branch — falling out of the loop covers it.
+    }
+
+    if (extractedNodeIds.size > 0) {
+      void refreshNodesData([...extractedNodeIds]);
     }
 
     if (sawError) {
@@ -474,6 +517,7 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
     setStreamingText(null);
     setStreamingThinking(null);
     setStreamingSearch(null);
+    setStreamingExtraction(null);
     setIsSending(false);
   }
 
@@ -550,7 +594,11 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
   const [showExtraSettings, setShowExtraSettings] = React.useState(false);
 
   const Icon = PROVIDER_ICONS[typedData.provider];
-  const models = MODEL_OPTIONS[typedData.provider];
+  // Local LLM mode swaps in Ollama's real installed models instead of this provider's
+  // static cloud list — the node keeps its provider icon/branding either way (see
+  // routes/chat.ts's own comment on why "local" bypasses `provider` only for routing,
+  // not for the rest of the node's identity).
+  const models = typedData.executionMode === "local" ? (localStatus?.models ?? []) : MODEL_OPTIONS[typedData.provider];
   const activeSession = sessions.find((session) => session.id === activeSessionId);
   const activeTitle = activeSession?.title ?? "New chat";
   // Drives the composer's single trailing button (mic ↔ send) — see that button's own
@@ -642,13 +690,22 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
           </div>
 
           {/* F-12: "selecting an inert mode should say so plainly, not silently do
-              nothing" — MVP only wires up Native API; the card and its controls stay
-              fully visible and usable in the other modes, it just can't send yet. */}
-          {typedData.executionMode !== "native" ? (
+              nothing". Local LLM actually sends now (Ollama) — the banner only shows
+              when it's genuinely not reachable, not as a blanket "not built" notice
+              any more. Manual Input stays a plain notice; it's intentionally a
+              copy-paste bridge, not an automatic-send mode, and isn't built here yet. */}
+          {typedData.executionMode === "manual" ? (
             <p className="shrink-0 border-b border-border-muted px-2.5 py-1.5 text-[11px] text-text-warning">
-              {typedData.executionMode === "local"
-                ? "Local LLM mode isn't wired up yet — switch to Native API to chat here."
-                : "Manual input mode doesn't send automatically — switch to Native API to chat here."}
+              Manual Input mode doesn't send automatically — switch to Native API or Local LLM to chat here.
+            </p>
+          ) : typedData.executionMode === "local" && localStatus && !localStatus.available ? (
+            <p className="shrink-0 border-b border-border-muted px-2.5 py-1.5 text-[11px] text-text-warning">
+              Ollama isn't reachable — install it from{" "}
+              <a href="https://ollama.com" target="_blank" rel="noreferrer" className="nodrag underline">
+                ollama.com
+              </a>
+              , run <code className="rounded bg-background-muted px-1 py-0.5">ollama pull llama3.2</code> (or any model), and make sure
+              it's running.
             </p>
           ) : null}
 
@@ -733,6 +790,17 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
             )}
             {streamingText !== null ? (
               <div className="flex w-full flex-col gap-1">
+                {streamingExtraction ? (
+                  // Phase 5 — a connected video/audio/link node's content wasn't
+                  // cached yet, so the lazy pipeline is running for it right now; this
+                  // can take minutes (media-extraction.ts's own pipeline timeout), so
+                  // it gets its own clearly-labeled line rather than looking like a
+                  // frozen response.
+                  <p className="flex items-center gap-1 text-[10px] text-text-muted">
+                    <Loader2 className="size-2.5 animate-spin" aria-hidden="true" />
+                    {streamingExtraction.label}
+                  </p>
+                ) : null}
                 {streamingThinking ? (
                   <details open className="text-[10px] text-text-muted">
                     <summary className="nodrag cursor-pointer select-none">Thinking…</summary>
@@ -892,12 +960,21 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
             </button>
             <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" className="hidden" onChange={handleFileChosen} />
             <div className="relative shrink-0">
-              <select className={pillSelectClass} value={typedData.model} onChange={(event) => updateData({ model: event.target.value })}>
-                {models.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
+              <select
+                className={pillSelectClass}
+                value={typedData.model}
+                onChange={(event) => updateData({ model: event.target.value })}
+                disabled={typedData.executionMode === "local" && models.length === 0}
+              >
+                {models.length > 0 ? (
+                  models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))
+                ) : (
+                  <option value={typedData.model}>{localStatus === null ? "Loading models…" : "No local models found"}</option>
+                )}
               </select>
               <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 size-2.5 -translate-y-1/2 text-text-muted" aria-hidden="true" />
             </div>

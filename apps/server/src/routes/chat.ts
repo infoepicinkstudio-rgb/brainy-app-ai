@@ -13,6 +13,7 @@ import { eq, asc, desc, and, isNull } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { nodes, chat_messages, chat_sessions } from "../db/schema.js";
 import { getAdapter, listAdapters, type ProviderId } from "../providers/index.js";
+import { ollamaAdapter, getLocalStatus } from "../providers/ollama.js";
 import { assembleContext } from "../lib/context-assembly.js";
 import { saveUpload, readStoredFile } from "../lib/uploads.js";
 
@@ -166,6 +167,14 @@ export async function chatRoutes(app: FastifyInstance) {
     }
   );
 
+  // Local LLM (Ollama) status + live model list — real-time, not a static ModelInfo
+  // list the way the three cloud providers get one, since what's actually usable
+  // depends entirely on what the user has pulled, and that can change at any moment
+  // (ollama.ts's `getLocalStatus` doc comment has the full reasoning).
+  app.get("/api/providers/local-models", async () => {
+    return getLocalStatus();
+  });
+
   // F-29 — estimated running cost total, broken down per provider, Native API only.
   // Summed in application code rather than a SQL aggregate: this is a tiny local SQLite
   // table (one no-coder's own chat history), not a scale concern, and keeping the math
@@ -229,22 +238,30 @@ export async function chatRoutes(app: FastifyInstance) {
     }
 
     // F-12: "selecting an inert mode should say so plainly, not silently do nothing" —
-    // MVP only wires up Native API; Local LLM/Manual Input are visible but inert.
+    // Native API and Local LLM both actually send now. Manual Input is still
+    // intentionally inert (it's a copy-paste bridge to an external chat tool the user
+    // already pays for, not an automatic-send mode by design) — not yet built here.
     const executionMode = chatData.executionMode ?? "native";
-    if (executionMode !== "native") {
+    if (executionMode === "manual") {
       return reply.code(400).send({
-        error:
-          executionMode === "local"
-            ? "Local LLM mode isn't wired up yet — switch this node to Native API to chat."
-            : "Manual Input mode doesn't send automatically — switch this node to Native API to chat here.",
+        error: "Manual Input mode doesn't send automatically — switch this node to Native API or Local LLM to chat here.",
       });
     }
 
-    const adapter = getAdapter(provider);
+    // Local LLM bypasses the node's own `provider` field entirely — Istiyak's own
+    // framing of why: Manual Input is a copy-paste convenience, not automatic AI;
+    // Local LLM (Ollama, running on his own machine) is the only mode that gives real,
+    // automatic, in-app AI synthesis at zero marginal cost per message, independent of
+    // which cloud provider icon the node happens to display. See providers/ollama.ts's
+    // top comment for the full reasoning on why it isn't just another `ProviderId`.
+    const adapter = executionMode === "local" ? ollamaAdapter : getAdapter(provider);
     if (!(await adapter.isConfigured())) {
-      return reply
-        .code(400)
-        .send({ error: `No ${provider[0].toUpperCase()}${provider.slice(1)} API key saved — add one in Settings.` });
+      return reply.code(400).send({
+        error:
+          executionMode === "local"
+            ? "Ollama isn't reachable — install it from ollama.com, run `ollama pull <model>`, and make sure it's running, then try again."
+            : `No ${provider[0].toUpperCase()}${provider.slice(1)} API key saved — add one in Settings.`,
+      });
     }
 
     const priorMessages = await db
@@ -268,12 +285,16 @@ export async function chatRoutes(app: FastifyInstance) {
       return { role: m.role as "user" | "assistant", content: prefix + m.content };
     });
 
-    const { context, notesForAI, brandProfile } = await assembleContext(node);
-
-    // Read + base64-encode THIS turn's images before saving the user row — an
-    // unreadable attachment (deleted from disk, bad reference) fails the send with a
-    // clear message rather than silently answering as though no image was sent.
-    const images: { mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp"; base64: string }[] = [];
+    // Read + base64-encode THIS turn's DIRECTLY-attached images BEFORE hijacking the
+    // response — an unreadable attachment (deleted from disk, bad reference) fails the
+    // send with a plain JSON 400 the same way every other pre-stream validation here
+    // does, rather than needing to fail that case over an already-hijacked SSE
+    // connection. This is only HALF of what ends up in the final `images` array sent to
+    // the adapter below — the other half (a CONNECTED image node's bytes) comes back
+    // from `assembleContext` further down, since resolving connected nodes needs the
+    // DB lookups `assembleContext` already does (see context-assembly.ts's own comment
+    // on why that gap existed until now).
+    const directImages: { mediaType: "image/jpeg" | "image/png" | "image/gif" | "image/webp"; base64: string }[] = [];
     for (const att of attachments) {
       if (!SUPPORTED_IMAGE_MIME_TYPES.has(att.mimeType)) {
         return reply.code(400).send({ error: `"${att.originalName}" isn't a supported image type.` });
@@ -282,11 +303,36 @@ export async function chatRoutes(app: FastifyInstance) {
       if (!buffer) {
         return reply.code(400).send({ error: `Couldn't read the attached image "${att.originalName}" — try attaching it again.` });
       }
-      images.push({ mediaType: att.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", base64: buffer.toString("base64") });
+      directImages.push({ mediaType: att.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", base64: buffer.toString("base64") });
     }
 
-    // The user's own turn is saved immediately, before streaming starts — so it's
-    // part of this node's permanent history even if the provider call then fails
+    request.raw.on("close", () => {
+      // Client navigated away / closed the tab mid-stream — nothing further to write.
+      // Fastify/Node handle the underlying socket teardown; this just stops the loop
+      // below from doing pointless work against a dead connection.
+    });
+
+    // Hijacked BEFORE `assembleContext` now (Phase 5, ADR-0044/ADR-0085..0087) — a
+    // connected video/audio/link node can trigger a genuinely slow yt-dlp/ffmpeg/
+    // whisper pipeline run on a cache miss, and the whole point of surfacing that as an
+    // "extracting" SSE event (implementation_plan.md Phase 5 step 5) is for the chat UI
+    // to show it WHILE waiting, not find out about it after the fact — which means the
+    // stream has to already be open before `assembleContext` is even called.
+    reply.hijack();
+    writeSseHeaders(reply);
+
+    const { context, notesForAI, brandProfile, images: connectedImages } = await assembleContext(node, (info) => {
+      writeSseEvent(reply, { type: "extracting", nodeId: info.nodeId, label: info.label });
+    });
+    // Direct attachment (this turn's composer upload) + connected image nodes (edges
+    // into this chat node) are merged into one flat list here — the adapters
+    // themselves (claude.ts/ollama.ts) don't need to know or care which path a given
+    // image came from, same as context items from different node types already don't
+    // distinguish their source past this point.
+    const images = [...directImages, ...connectedImages];
+
+    // The user's own turn is saved immediately, before the provider stream starts — so
+    // it's part of this node's permanent history even if the provider call then fails
     // (the failed turn just never gets an assistant reply beneath it, same as a
     // real chat client that shows your sent message regardless of what happens next).
     await db.insert(chat_messages).values({
@@ -312,15 +358,6 @@ export async function chatRoutes(app: FastifyInstance) {
         })
         .where(eq(chat_sessions.id, sessionRow.id));
     }
-
-    request.raw.on("close", () => {
-      // Client navigated away / closed the tab mid-stream — nothing further to write.
-      // Fastify/Node handle the underlying socket teardown; this just stops the loop
-      // below from doing pointless work against a dead connection.
-    });
-
-    reply.hijack();
-    writeSseHeaders(reply);
 
     let fullText = "";
     let finalUsage: { inputTokens: number; outputTokens: number; webSearches?: number } | undefined;

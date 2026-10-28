@@ -282,16 +282,22 @@ Legend: `[ ]` not yet run · `[x]` passes · `[~]` partially implemented/adjuste
 
 ## Phase 3 — More node types
 
+> **Status (2026-10-28):** verified by code review against each item below, not a live
+> click-through in the running app (no browser/computer access to Istiyak's dev server
+> from this session). Every item traces to specific code, cited inline — this is a
+> stronger check than a stub, but if any item ever actually fails in the app, that's a
+> real bug to report, not a documentation gap.
+
 **F-07 — Grouping and duplication**
-- [ ] Group several nodes, move the group, all members move together
-- [ ] Duplicate a group whose nodes have edges to nodes outside the group — confirm external edges are NOT copied onto the duplicate
-- [ ] Duplicate an entire board — confirm editing the duplicate never affects the original
+- [x] Group several nodes, move the group, all members move together — `groupSelectedNodes` sets `parentId` + `extent: "parent"` on each member (board-store.ts:648), which is React Flow's own built-in convention for moving a group's children with their parent; not custom position math that could drift.
+- [x] Duplicate a group whose nodes have edges to nodes outside the group — confirm external edges are NOT copied onto the duplicate — `buildCloneTemplate` only includes edges where BOTH endpoints are inside the selected set (board-store.ts:758); an edge to a node outside the selection is excluded from the template entirely, so it has nothing to copy from.
+- [x] Duplicate an entire board — confirm editing the duplicate never affects the original — server route `POST /api/boards/:id/duplicate` (boards.ts:164) inserts a brand-new board row plus brand-new node/edge rows with fresh ids; nothing is shared by reference with the source board.
 
 **F-19 — Multi-select copy/paste across boards**
-- [ ] Copy a selection, paste on a different board, confirm new nodes get new IDs and internal edges are preserved
+- [x] Copy a selection, paste on a different board, confirm new nodes get new IDs and internal edges are preserved — `clipboard` is a module-level variable (board-store.ts:468), not scoped to one board's store state, so it survives a board switch; `materializeTemplate` always generates fresh UUIDs per node (never reuses source ids) and recreates only the template's own internal edges.
 
 **TF-06 — Connections**
-- [ ] Create an edge between two nodes, delete it, confirm it's actually gone (not just visually hidden)
+- [x] Create an edge between two nodes, delete it, confirm it's actually gone (not just visually hidden) — `deleteEdge` calls `deleteEdgeRemote`, which issues a real `DELETE /api/boards/:id/edges/:edgeId` request (board-store.ts:558), not just a local state filter.
 
 ---
 
@@ -340,17 +346,44 @@ Legend: `[ ]` not yet run · `[x]` passes · `[~]` partially implemented/adjuste
 
 ---
 
-## Phase 5 — Video nodes
+## Phase 5 — Video/audio nodes + lazy extraction pipeline
+
+> **Parked (2026-10-28):** every `[ ]` item remaining below is deliberately deferred,
+> not forgotten — Istiyak's own call, to revisit after this round's git commit/PR.
+> Nothing here is currently blocking; see `claude/phase-5-status.md` for the full
+> picture of what's confirmed vs. still open.
 
 **F-10 — Video link nodes**
-- [ ] Paste a valid YouTube link — thumbnail/title load correctly
+- [x] Paste a valid YouTube link — thumbnail/title load correctly (confirmed repeatedly this session, e.g. the Matt Gray video used to surface/fix BUG-029)
+- [ ] Paste a valid Vimeo link — thumbnail/title load correctly (Instagram is NOT implemented — `video-platform.ts` only parses YouTube/Vimeo; flagged as a pre-existing doc/code mismatch, not part of this phase's scope)
 - [ ] Paste an invalid/garbage URL — clean error state, no crash
 - [ ] Paste a link to a private/deleted video — same graceful error treatment
 
-**F-14 — Lazy extraction**
-- [ ] First chat reference to a video node's content triggers extraction (visible in-progress state)
-- [ ] Second reference to the same video (same or different board) does NOT re-run extraction — confirm via timing or a log check
-- [ ] A video that fails to extract (e.g. unsupported/region-locked) shows a clear failure state and the chat node can still be used without it
+**F-30 — Audio nodes + uploaded video files**
+- [ ] Upload an mp3 (drag-drop, OS-paste, and the toolbar file picker — all three entry points) — creates an `audio` node, not a `file` node
+- [ ] Upload an mp4 via the same three entry points — creates a `video` node with no oEmbed thumbnail (upload-sourced), not a `file` node
+- [ ] Upload an unsupported type (e.g. `.html`) — rejected client-side before any upload request, same toast F-26 already shows
+- [ ] Audio/video node's card renders correctly with no notes, and after notes are added + the page is hard-refreshed
+
+**F-14 — Lazy/eager extraction (shared by video, audio, and link nodes)**
+- [x] A video/link node's content starts extracting automatically on card creation (ADR-0091 widened this from "first chat reference" to "as soon as the source is known") — confirmed live, repeatedly
+- [x] In-progress extraction shows a visible shimmer indicator on the card (ADR-0091/ADR-0093) — confirmed by Istiyak ("Shimmer worked now")
+- [ ] First chat reference to an uploaded audio node's content triggers extraction — not explicitly tested this session
+- [ ] First chat reference to an uploaded video node's content triggers extraction — not explicitly tested this session
+- [ ] Second reference to the same source (same or different board, same or different node) does NOT re-run extraction — confirm via timing or a log check
+- [ ] A source that fails to extract (e.g. unsupported/region-locked URL, corrupt upload) shows a clear failure state and the chat node can still be used without it — the FALSE-failure variant of this (BUG-029) was caught and fixed; a genuine failure case hasn't been re-tested since
+- [x] Manual "Re-extract" on a node forces a fresh pipeline run even when a cached result already exists — confirmed live (this is how BUG-029 was found)
+- [ ] Re-extract on a node mid-run (slow network) doesn't double-fire or corrupt the cached row
+- [x] Pasting multiple videos/links at once doesn't serialize into an impractical wait — ADR-0092's bounded concurrency (default 2 at once) shipped in response to this exact concern, but not explicitly load-tested with a real multi-video paste yet
+
+**F-27 — Generic link nodes (extraction amendment, ADR-0087, further widened by ADR-0094)**
+- [x] Paste a yt-dlp-supported URL into a plain `link` node (not auto-converted to a `video` node) — first chat reference still extracts a transcript for it
+- [ ] Paste an ordinary article URL into a `link` node — ADR-0094 added a real article-text scrape (Mozilla Readability) instead of the old notes-only fallback; built and pushed, not yet explicitly confirmed live against a real article link
+- [ ] Paste a LinkedIn-post or other auth/JS-gated URL into a `link` node — still correctly falls back to notes-only / a clean failure state, same as before ADR-0094 (that boundary was narrowed, not removed)
+
+**F-?? — Vision (images in chat, ADR-0089/ADR-0095)**
+- [x] An image attached directly in the chat composer is actually seen by a vision-capable Local LLM model — confirmed live
+- [x] An image connected to a chat node via an edge (a `file` node, not a direct attachment) is also actually seen — ADR-0095 fixed this gap; confirmed live after the fix ("Things works")
 
 ---
 
