@@ -27,6 +27,10 @@ export function ExecutionModeSelector({ status }: { status: ProviderStatus }) {
   return (
     <fieldset className="flex flex-col gap-2 border-0 p-0" disabled={isSaving}>
       <legend className="text-sm text-text-secondary">Default execution mode</legend>
+      {/* ADR-0019/F-12: this sets the starting mode for newly placed nodes only — each
+          chat node keeps its own mode afterwards and can be switched independently,
+          even on the same board, without this setting or any other node changing. */}
+      <p className="text-xs text-text-muted">Applies to new {status.provider} chat nodes you place from now on.</p>
       <div className="flex flex-col gap-1">
         {MODE_OPTIONS.map((option) => (
           <label

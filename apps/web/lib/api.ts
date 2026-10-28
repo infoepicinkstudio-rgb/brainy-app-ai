@@ -23,6 +23,14 @@ export class ApiError extends Error {
 // laggy; uploads get longer since a 50MB file genuinely needs more wall-clock time.
 const DEFAULT_TIMEOUT_MS = 15_000;
 const UPLOAD_TIMEOUT_MS = 60_000;
+// Phase 5 (ADR-0085/ADR-0086/ADR-0088) — the manual "Re-extract" button's POST can run
+// the full yt-dlp → ffmpeg → whisper pipeline end to end, which media-extraction.ts
+// itself budgets up to 10 minutes per step for (PIPELINE_STEP_TIMEOUT_MS, multiple
+// steps). This client-side timeout is intentionally generous rather than tight —
+// Re-extract is an explicit, infrequent user action (not something on the hot path of
+// every page load like `request()`'s 15s default), so it's fine for this to wait a
+// genuinely long time rather than abort a pipeline that's still legitimately working.
+const LONG_RUNNING_TIMEOUT_MS = 10 * 60_000;
 
 function withTimeout(ms: number): { signal: AbortSignal; clear: () => void } {
   const controller = new AbortController();
@@ -30,8 +38,13 @@ function withTimeout(ms: number): { signal: AbortSignal; clear: () => void } {
   return { signal: controller.signal, clear: () => clearTimeout(timer) };
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const { signal, clear } = withTimeout(DEFAULT_TIMEOUT_MS);
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  timeoutMessage: string = "Can't reach the Brainy.ai backend. Check that the server is running."
+): Promise<T> {
+  const { signal, clear } = withTimeout(timeoutMs);
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
@@ -50,7 +63,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
-      throw new ApiError("Can't reach the Brainy.ai backend. Check that the server is running.", 0);
+      throw new ApiError(timeoutMessage, 0);
     }
     throw err;
   } finally {
@@ -95,6 +108,42 @@ export const api = {
   delete: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "DELETE", body: body !== undefined ? JSON.stringify(body) : undefined }),
 };
+
+/**
+ * Phase 5 (ADR-0044/ADR-0088) — the manual "Re-extract" POST, which can run the full
+ * yt-dlp → ffmpeg → whisper pipeline and so needs `LONG_RUNNING_TIMEOUT_MS`, not the
+ * default 15s every other call in this file uses. Always a bodyless POST (board-store.ts's
+ * `reExtractNode` is the only caller), so this doesn't need the full `init` surface
+ * `request()` exposes.
+ */
+export function reExtractRequest<T>(path: string): Promise<T> {
+  return request<T>(
+    path,
+    { method: "POST" },
+    LONG_RUNNING_TIMEOUT_MS,
+    "Re-extracting this took too long and timed out. It may still finish in the background — try refreshing in a bit, or try Re-extract again."
+  );
+}
+
+/**
+ * ADR-0091 — the automatic, non-forced extraction trigger fired the moment a
+ * video/audio/link node's source becomes known (board-store.ts's `startExtraction`).
+ * Same long-running budget as `reExtractRequest` above, since it can run the same full
+ * yt-dlp -> ffmpeg -> whisper pipeline on a cache miss — and `transcribe()` in
+ * media-extraction.ts has NO timeout of its own, so a long recording can genuinely
+ * outlast even this generous client-side wait. Callers don't treat that as a real
+ * failure: board-store.ts checks for this specific timeout (an `ApiError` with
+ * `status === 0`) and falls back to polling the node for its eventual real status
+ * instead of reverting the UI to a stale/misleading "failed" state.
+ */
+export function extractRequest<T>(path: string): Promise<T> {
+  return request<T>(
+    path,
+    { method: "POST" },
+    LONG_RUNNING_TIMEOUT_MS,
+    "This is taking a while — it may still be working in the background. The card will update on its own once it's done."
+  );
+}
 
 /**
  * Multipart upload (file-node uploads, F-26) bypasses `request()` — it must NOT send

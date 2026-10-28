@@ -370,23 +370,25 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 
 **Build checklist:**
 
+> **Status (2026-10-28):** all items below confirmed by code review in `apps/web/stores/board-store.ts`, `apps/web/app/brainboards/[id]/page.tsx`, and `apps/server/src/routes/boards.ts` — this work was actually built, just never checked off here. See `testing.md`'s Phase 3 section for the per-item code citations. Not re-verified by a live click-through (no browser/computer access to Istiyak's dev server from this session).
+
 *TF-06 — Connections*
-- [ ] Drag-to-connect edge creation UI
-- [ ] Edge persists to `edges` table
-- [ ] Edge deletion (click/select + delete)
-- [ ] Edge visually distinguishes direction (source → target)
+- [x] Drag-to-connect edge creation UI — React Flow's `onConnect` wired to `connectNodes` (board-store.ts), which rejects self-loops and exact duplicate edges.
+- [x] Edge persists to `edges` table — `connectNodes` posts to `/api/boards/:id/edges`.
+- [x] Edge deletion (click/select + delete) — `deleteEdge` → `deleteEdgeRemote` issues a real `DELETE /api/boards/:id/edges/:edgeId`.
+- [x] Edge visually distinguishes direction (source → target) — default edge options set `markerEnd: { type: MarkerType.ArrowClosed, ... }` (brainboards/[id]/page.tsx).
 
 *Grouping*
-- [ ] Resolve: is "group" its own node type, or a UI-only selection concept? Decide and record the answer.
-- [ ] Group selected nodes into one movable/selectable unit
-- [ ] Ungroup without altering member positions relative to each other
+- [x] Resolve: is "group" its own node type, or a UI-only selection concept? Decide and record the answer. — Decided: its own node type (`RF_GROUP_TYPE` / `GroupNodeData`, persisted server-side), not a UI-only selection concept.
+- [x] Group selected nodes into one movable/selectable unit — `groupSelectedNodes` sets `parentId` + `extent: "parent"` on each member, React Flow's own convention for moving children with their parent.
+- [x] Ungroup without altering member positions relative to each other — `ungroupNode` restores each member's absolute position from its stored `relativePosition` before detaching.
 
 *Duplication (F-07, F-19)*
-- [ ] Duplicate a single node
-- [ ] Duplicate a group — confirm internal edges are preserved, external edges are NOT copied onto the duplicate
-- [ ] Duplicate an entire board — confirm the duplicate is fully independent of the original
-- [ ] Copy/paste a selection across boards — new nodes get new UUIDs, internal edges preserved
-- [ ] **Phase 3 "done looks like" verified**
+- [x] Duplicate a single node — `duplicateSelection` via `buildCloneTemplate`/`materializeTemplate`, fixed `DUPLICATE_OFFSET` nudge.
+- [x] Duplicate a group — confirm internal edges are preserved, external edges are NOT copied onto the duplicate — `buildCloneTemplate` includes only edges with both endpoints inside the selection.
+- [x] Duplicate an entire board — confirm the duplicate is fully independent of the original — server route `POST /api/boards/:id/duplicate` re-inserts everything under brand-new ids on a brand-new board row.
+- [x] Copy/paste a selection across boards — new nodes get new UUIDs, internal edges preserved — `clipboard` is a module-level variable that survives a board switch; `materializeTemplate` always mints fresh UUIDs.
+- [x] **Phase 3 "done looks like" verified** — verified by code review per the items above; not yet exercised live in the running app.
 
 **Depends on:** Phase 2 (board store, text nodes, autosave mechanism all reused here, not rebuilt).
 **Verify with:** `testing.md` Phase 3 section.
@@ -409,62 +411,119 @@ This phase is frontend-heavy with one real backend surface (provider credentials
 **Build checklist:**
 
 *TF-07 — Configure chat node*
-- [ ] `ProviderAdapter` interface defined; Claude implementation real (incl. `listModels()`), OpenAI/Gemini stubs present and satisfy the interface
-- [ ] Real tools panel component (replaces Phase 1 stub), Claude enabled/disabled per `isConfigured()`
-- [ ] Claude chat node type component, placeable on canvas from the tools panel
-- [ ] Per-node execution-mode selector UI — MVP only requires **Native API** to function; Local LLM/Manual Input visible but may be inert (say so plainly if selected)
-- [ ] Per-node model selector UI (F-12, ADR-0052) — independent of execution mode, defaults to a sane model, never blocks node placement on a choice
+- [x] `ProviderAdapter` interface defined; Claude implementation real (incl. `listModels()`), OpenAI/Gemini stubs present and satisfy the interface
+- [x] Real tools panel component (replaces Phase 1 stub), Claude enabled/disabled per `isConfigured()`
+- [x] Claude chat node type component, placeable on canvas from the tools panel
+- [x] Per-node execution-mode selector UI — MVP only requires **Native API** to function; Local LLM/Manual Input visible but may be inert (say so plainly if selected)
+- [x] Per-node model selector UI (F-12, ADR-0052) — independent of execution mode, defaults to a sane model, never blocks node placement on a choice
 
 *TF-08 — Chat synthesis*
-- [ ] SSE route on backend for chat streaming, tested against a hardcoded prompt first
-- [ ] Frontend SSE client consuming the stream, rendering tokens as they arrive
-- [ ] Context-assembly module: resolve connected text, file, and link nodes' content into the prompt (video nodes deferred to Phase 5)
-- [ ] `chat_messages` persistence (both user prompt and streamed response saved), including `model`/`tokens_used`/`estimated_cost` for Native API calls
-- [ ] Per-node "notes for AI" field exists on the node and is included in context assembly
-- [ ] Error/stuck state UI (what the user sees if the API call fails or hangs) + retry action that re-sends without requiring the prompt to be retyped
-- [ ] Brand/Voice Profile opt-in per chat node, included in context assembly when opted in
-- [ ] Estimated cost running-total view in Settings (F-29), summing Native API usage per provider — explicitly labeled as an estimate
-- [ ] **Phase 4 "done looks like" verified** — a real connected-node-aware streamed response confirmed, using the model chosen on that specific node
+- [ ] SSE route on backend for chat streaming, tested against a hardcoded prompt first — *built, never executed against a live connection; blocked on a funded API key (see Status below)*
+- [ ] Frontend SSE client consuming the stream, rendering tokens as they arrive — *built, same blocker*
+- [x] Context-assembly module: resolve connected text, file, and link nodes' content into the prompt (video nodes deferred to Phase 5)
+- [x] `chat_messages` persistence (both user prompt and streamed response saved), including `model`/`tokens_used`/`estimated_cost` for Native API calls
+- [x] Per-node "notes for AI" field exists on the node and is included in context assembly
+- [x] Error/stuck state UI (what the user sees if the API call fails or hangs) + retry action that re-sends without requiring the prompt to be retyped — *the "no key saved" error path is exercisable today, at zero cost, by sending with no key configured; the mid-stream-failure path still needs a live call*
+- [x] Brand/Voice Profile opt-in per chat node, included in context assembly when opted in
+- [x] Estimated cost running-total view in Settings (F-29), summing Native API usage per provider — explicitly labeled as an estimate
+- [ ] **Phase 4 "done looks like" verified** — a real connected-node-aware streamed response confirmed, using the model chosen on that specific node — **BLOCKED, open**
 
 **Depends on:** Phase 1 (API-key storage), Phase 3 (edges — context assembly reads connections).
 **Verify with:** `testing.md` Phase 4 section.
 
+**Status (2026-10-28):** build closed — every item that can be verified without spending
+API tokens is done and `tsc --noEmit` is clean on both apps. The two items above left
+open are deliberately left open, not forgotten: neither can be truthfully checked off
+without an actual streamed response, and that requires a funded Anthropic API key,
+which doesn't exist in this build environment. Live-verify those two, then re-run
+`testing.md`'s Phase 4 section (F-12/F-13/F-29/F-16/F-20/F-21), before calling this
+phase fully done. Full handoff notes: `claude/phase-4-status.md` in the Brainy.ai
+Project.
+
 ---
 
-## Phase 5 — Video nodes
+## Phase 5 — Video/audio nodes + lazy extraction pipeline
 
-**Objective:** pasting a YouTube link renders a thumbnail node instantly; connecting it to a chat node and asking a question about its content triggers extraction once, caches it, and a second question does not re-trigger extraction.
+**Scoped with Istiyak at session start (two rounds of clarifying questions, logged as
+ADR-0085 through ADR-0088 in `rules-decisions.md`) — this objective and checklist
+reflect the scope as actually decided, which is wider than this section's original
+draft:**
+- A dedicated `audio` node type for uploaded audio files (mp3/wav/m4a/ogg/flac/aac) —
+  upload only, no URL variant (ADR-0085).
+- The existing `video` node (YouTube/Vimeo oEmbed, pre-existing from the node-card-
+  overhaul work, ADR-0065 — thumbnail/title only, no extraction) is extended to also
+  accept uploaded local video files (mp4/mov/webm/mkv/avi) via a `source: "url"|"upload"`
+  discriminant (ADR-0086). Instagram was never implemented and is not part of this
+  phase's scope.
+- `link` nodes become extraction-eligible through the same pipeline, amending (not
+  reversing) ADR-0053/F-27's "no automatic scraping" boundary — a link that isn't
+  actually a yt-dlp-supported media URL just falls back to notes-only (ADR-0087).
+- Whisper runs via `@fugood/whisper.node` (prebuilt native addon, no Windows build
+  toolchain), not a subprocess wrapping `whisper.cpp` as ADR-0051 originally pictured —
+  logged as ADR-0088, which narrows ADR-0051's literal wording while keeping its actual
+  goal (zero extra toolchain, $0 cost).
+
+**Objective:** an uploaded audio/video file, or a pasted link, sits on the board doing
+nothing until a connected chat node's first question actually references it — that
+reference triggers the yt-dlp → ffmpeg → whisper pipeline once, caches the transcript in
+`extraction_cache` forever, and every later question (or re-opening the board) reuses the
+cached result. The only way to force a fresh run is the node's manual "Re-extract" button.
 
 **Technical approach:**
-0. **Install the pipeline binaries before writing any extraction code** — `yt-dlp.exe` (standalone build, no Python), `ffmpeg.exe` — both need to be on `PATH` or referenced by an explicit path in config. No Python install needed for this phase by default (ADR-0051); if the Node/whisper.cpp wrapper route is abandoned later, that's the point to revisit installing Python.
-1. **Metadata fetch first** (thumbnail/title only) — a lightweight route, no subprocess work, gets the video node rendering correctly before the heavier extraction pipeline exists at all.
-2. **`extraction_cache` lookup logic** as its own function (`checkCache(url)`), written and tested against manually-inserted rows *before* the real pipeline exists — proves the cache-hit/cache-miss branching is correct independent of yt-dlp actually working.
-3. **yt-dlp → ffmpeg → Whisper pipeline** built as a single backend job function, called only on a confirmed cache miss. Whisper step uses a Node package wrapping `whisper.cpp` as a subprocess (ADR-0051) — not a Python call.
-4. **Context-assembly extension**: the module from Phase 4 gains a video-node branch — on encountering a video node, call the extraction pipeline (with its cache check) before resolving content, rather than assuming text is already there.
-5. **In-progress UI state** last, surfaced through the existing SSE stream (an intermediate status chunk) rather than inventing a second communication channel.
+0. **No DB migration needed** — `extraction_cache` (`source_key` unique, content, extracted_at) was already generalized for exactly this (video/audio transcripts + file-node text) when it was created; confirmed by reading `db/schema.ts` before writing any Phase 5 code.
+1. **`media-extraction.ts`** (`apps/server/src/lib/`) as a single module owning the whole pipeline — cache-check, yt-dlp download, ffmpeg normalize-to-wav, whisper transcribe, cache-write — structured after the existing `extraction.ts` (pdf/docx/xlsx) pattern: never throws, always resolves to a status (`ok`/`pending`/`failed`).
+2. **Upload-route classification before anything else**: `files.ts`'s upload route now classifies `mediaKind` (`document`/`audio`/`video`) by extension and skips the document-only `extractForFile` path entirely for audio/video — storage only, same content-addressed `uploads/` directory already used by file nodes.
+3. **Context-assembly extension**: `context-assembly.ts` gains a shared `resolveMediaNode` branch for `video`/`audio`/`link` node types (replacing the old `video → null`/inline-`link` handling), taking an `onExtracting` callback so a cache-miss can surface progress.
+4. **In-progress UI state** via the existing chat SSE stream — `chat.ts` moves `assembleContext` to run after the stream is already hijacked, so a new `"extracting"` SSE event can be emitted mid-assembly, before any model tokens arrive.
+5. **Manual Re-extract** as its own route (`POST /api/boards/:boardId/nodes/:nodeId/re-extract`), the one place the pipeline runs outside the lazy chat-triggered path, forcing past the cache.
 
 **Build checklist:**
 
-*TF-05 — Add video link node*
-- [ ] YouTube link parser + metadata/thumbnail fetch (oEmbed or Data API)
-- [ ] Instagram link parser + metadata/thumbnail fetch
-- [ ] Video node UI: thumbnail, title, click-through to original — explicitly no in-app playback
-- [ ] Invalid/unreachable link handled gracefully (error state on the node, not a crash)
+*TF-05 — Video link node (pre-existing) + new audio/video upload support*
+- [x] YouTube + Vimeo link parser + oEmbed metadata/thumbnail fetch — pre-existing (`lib/video-platform.ts`, node-card-overhaul work), confirmed still correct, not re-built this phase
+- [x] Video node UI: thumbnail, title, click-through to original — explicitly no in-app playback (pre-existing)
+- [x] Invalid/unreachable link handled gracefully (error state on the node, not a crash) — pre-existing
+- [x] `audio` node type added (data shape, board-store routing, node component) (ADR-0085)
+- [x] `video` node extended to accept uploaded files via `source: "upload"` (ADR-0086)
+- [x] Video and link node types confirmed live on Istiyak's board (real YouTube links, real article links, cards render and behave correctly) — audio/video-upload specifically still unconfirmed, see below
 
 *Lazy extraction pipeline*
-- [ ] `yt-dlp.exe` and `ffmpeg.exe` installed on the dev machine and reachable (PATH or explicit config path) — no Python required for this (ADR-0051)
-- [ ] `extraction_cache` cache-check function, tested against manually-inserted rows
-- [ ] yt-dlp integration (audio pull)
-- [ ] ffmpeg normalization step
-- [ ] Whisper transcription step (via a Node package wrapping `whisper.cpp`, not a Python call)
-- [ ] Cache-check-before-extract logic confirmed end-to-end (second request for the same URL does not re-run the pipeline)
-- [ ] In-progress UI state shown on the node/chat while extraction runs (via existing SSE channel)
-- [ ] Context assembly updated to include video-node transcripts once extracted
-- [ ] Extraction failure (private/region-locked/unsupported) shows a clear failure state; chat can continue without that node's content
-- [ ] **Phase 5 "done looks like" verified** — confirmed only one extraction run per source
+- [x] `yt-dlp.exe` and `ffmpeg.exe` installed on Istiyak's machine and reachable — confirmed by multiple real, successful transcriptions this session (e.g. a full-length YouTube video)
+- [x] `extraction_cache` cache-check function (`hasCachedTranscript`/`extractMediaForNode` in `media-extraction.ts`)
+- [x] yt-dlp integration (audio pull, for URL-sourced video/audio/link nodes)
+- [x] ffmpeg normalization step (mono 16kHz WAV, what `@fugood/whisper.node` expects)
+- [x] Whisper transcription step (`@fugood/whisper.node`, ADR-0088 — not a subprocess, not Python)
+- [x] `link` nodes wired into the same pipeline, notes-only fallback on a non-media URL (ADR-0087); extended by ADR-0094 to a real article-text scrape fallback (not just notes-only) when the media pipeline doesn't apply
+- [x] GGML model file (`models/ggml-base.en.bin`) downloaded on Istiyak's machine — confirmed by the same successful transcriptions above
+- [ ] Cache-check-before-extract logic confirmed end-to-end on a real board (second question about the same source does not re-run the pipeline) — not explicitly tested this session
+- [x] In-progress UI state plumbing built (SSE `"extracting"` event, `chat.ts`/`chat-stream.ts`/`chat-node.tsx`)
+- [x] In-progress UI state confirmed visible live during an actual extraction — the ADR-0091/ADR-0093 shimmer, confirmed working by Istiyak ("Shimmer worked now")
+- [x] Context assembly updated to include video/audio/link transcripts once extracted
+- [ ] Extraction failure (private/region-locked/unsupported/corrupt upload) confirmed to show a clear failure state live — the FALSE-failure bug (BUG-029) was caught and fixed this session, but a genuine failure case hasn't been explicitly re-tested since
+- [x] Manual "Re-extract" button confirmed live (used repeatedly this session, including the Re-extract that surfaced BUG-029)
+- [ ] **Phase 5 "done looks like" verified** — single-extraction-per-source caching behavior specifically not yet explicitly re-tested; everything else on this checklist that bears on "done" is now live-confirmed
 
 **Depends on:** Phase 4 (context assembly must already exist to extend).
 **Verify with:** `testing.md` Phase 5 section.
+
+**Status (2026-10-28, updated end of this session's second round):** Core pipeline is
+now LIVE-CONFIRMED working on Istiyak's machine, not just code-complete — a major step
+up from this doc's original "not yet live-verified" status. This session (continuing
+after the original Phase 5 build session) found and fixed six real bugs surfaced by
+actual use (BUG-026 through BUG-032) and shipped six further ADRs (ADR-0091 through
+ADR-0096): eager cache-respecting extraction on card creation, a thumbnail shimmer
+"still working" indicator, bounded pipeline concurrency, real article-text extraction
+for ordinary links (narrowing ADR-0053 further), a fix for connected image nodes never
+reaching a vision model (they only worked via direct chat-composer attachment before),
+and a race-condition fix for a node's `data` being silently reverted mid-extraction.
+Full narrative in `claude/phase-5-status.md` (Project doc). **Remaining `[ ]` items on
+this checklist (and in `testing.md`'s Phase 5 section) are PARKED as of 2026-10-28** —
+Istiyak's own call, to revisit after this round's git commit/PR, not currently
+blocking anything. Two checklist items above
+remain genuinely untested (repeat-reference caching, a true extraction-failure case) —
+worth a deliberate pass before calling Phase 5 fully closed. Performance (extraction
+and local-model response speed) is known to be slow on CPU-only hardware — Istiyak has
+explicitly deferred tuning this to a later pass, not a blocker for now.
 
 ---
 

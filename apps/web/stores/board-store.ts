@@ -27,11 +27,15 @@
 import { create } from "zustand";
 import type { Node, Edge, NodeChange, EdgeChange, Connection } from "@xyflow/react";
 import { applyNodeChanges, applyEdgeChanges } from "@xyflow/react";
-import { api, uploadFile } from "@/lib/api";
+import { api, uploadFile, reExtractRequest, extractRequest, ApiError } from "@/lib/api";
 import { parseVideoUrl } from "@/lib/video-platform";
 import { useToastStore } from "@/stores/toast-store";
+import { useSettingsStore } from "@/stores/settings-store";
 
-export type BrainyNodeType = "text" | "file" | "link" | "video";
+// "audio" added for Phase 5 (ADR-0085) — a dedicated node type for uploaded audio
+// files, upload-only (no URL variant); "video" already covers both URL and upload
+// sources as of ADR-0086 (VideoNodeData.source).
+export type BrainyNodeType = "text" | "file" | "link" | "video" | "chat" | "audio";
 
 // Phase 3 bug-fix round (Istiyak: "IF file type doesn't supported then it should not
 // have come to board... mp3 mp4 html certain files not supported yet"). Before this,
@@ -41,9 +45,17 @@ export type BrainyNodeType = "text" | "file" | "link" | "video";
 // still got a real board card, just one showing "This file type isn't supported for
 // text extraction" inline — a confusing half-success for something the user expected
 // to be rejected outright. This list is the single client-side source of truth for
-// "can this even become a card" and must be kept in sync with extraction.ts's own
-// `IMAGE_EXTENSIONS`/`supported` sets on the server — duplicated rather than fetched at
+// "can this even become a card" and must be kept in sync with routes/files.ts's own
+// `SUPPORTED_UPLOAD_EXTENSIONS` on the server — duplicated rather than fetched at
 // runtime since it's small, static, and needed synchronously before any network call.
+//
+// Phase 5 (ADR-0085/ADR-0086): audio/video extensions are exactly the ones the comment
+// above was deliberately deferring — now accepted, but routed to a DIFFERENT node type
+// than a document upload (see `addFileNode`'s branch on the upload response's
+// `mediaKind` below), never through the pdf/docx/xlsx extraction path.
+const AUDIO_UPLOAD_EXTENSIONS = new Set(["mp3", "wav", "m4a", "ogg", "flac", "aac"]);
+const VIDEO_UPLOAD_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "avi"]);
+
 const SUPPORTED_FILE_EXTENSIONS = new Set([
   "pdf",
   "doc",
@@ -58,6 +70,8 @@ const SUPPORTED_FILE_EXTENSIONS = new Set([
   "svg",
   "bmp",
   "heic",
+  ...AUDIO_UPLOAD_EXTENSIONS,
+  ...VIDEO_UPLOAD_EXTENSIONS,
 ]);
 
 function extensionOf(filename: string): string {
@@ -128,6 +142,14 @@ export interface LinkNodeData extends Record<string, unknown> {
   notes: string;
   cardWidth?: number;
   cardHeight?: number;
+  // Phase 5 (ADR-0087) — a link node's URL is now ALSO attempted through the lazy
+  // yt-dlp/ffmpeg/whisper pipeline (media-extraction.ts) when a connected chat node
+  // needs it, same cache/trigger model video nodes already use. Both optional and
+  // undefined on every node until a first attempt actually happens (most link nodes,
+  // pointing at an ordinary non-media page, will never show this at all) — this is
+  // additive, not a replacement for the notes-only behavior above (ADR-0053 untouched).
+  extractionStatus?: "pending" | "ok" | "failed";
+  extractionPreview?: string | null;
 }
 
 // Phase 5's metadata/thumbnail slice pulled forward (implementation_plan.md node-card-
@@ -137,14 +159,54 @@ export interface LinkNodeData extends Record<string, unknown> {
 // trip for title/thumbnail is what `status` is tracking). Round 2 (ADR-0069) widened
 // `platform` from YouTube-only to also cover Vimeo, which has the same kind of free,
 // no-auth oEmbed endpoint.
+//
+// Phase 5 real build (ADR-0086): `source` discriminates between the original URL path
+// (oEmbed metadata, `status`/`platform`/`videoId`/`thumbnailUrl`/`authorName` — all now
+// optional, present only when `source === "url"`) and a new upload path (`fileName`/
+// `storedName`/`contentHash`/`bytes`, the same shape FileNodeData already uses, present
+// only when `source === "upload"`). Every node created before this ADR has no `source`
+// field at all and reads as `"url"` by fallback (video-node.tsx) — every pre-existing
+// video node really was URL-based. Both sources share the same lazy transcript
+// extraction fields (`extractionStatus`/`extractionPreview`, ADR-0044/ADR-0086) —
+// undefined until a connected chat node's first reference (or an explicit Re-extract)
+// actually triggers one.
 export interface VideoNodeData extends Record<string, unknown> {
-  url: string;
-  platform: "youtube" | "vimeo";
-  videoId: string;
-  title: string;
-  thumbnailUrl: string;
-  authorName: string;
-  status: "loading" | "ok" | "error";
+  source?: "url" | "upload";
+  // url-source fields (pre-existing, now optional — present when source is "url" or
+  // absent/legacy)
+  url?: string;
+  platform?: "youtube" | "vimeo";
+  videoId?: string;
+  title?: string;
+  thumbnailUrl?: string;
+  authorName?: string;
+  /** The oEmbed metadata fetch's own status — url-source only. Unrelated to
+   * `extractionStatus` below, which tracks the separate transcript pipeline. */
+  status?: "loading" | "ok" | "error";
+  // upload-source fields (ADR-0086) — present when source === "upload"
+  fileName?: string;
+  storedName?: string;
+  contentHash?: string;
+  bytes?: number;
+  // shared — lazy transcript extraction (ADR-0044, extended to uploads by ADR-0086)
+  extractionStatus?: "pending" | "ok" | "failed";
+  extractionPreview?: string | null;
+  notes: string;
+  cardWidth?: number;
+  cardHeight?: number;
+}
+
+// Phase 5 (ADR-0085) — uploaded audio files (mp3/wav/m4a/ogg/flac/aac), their own node
+// type rather than routed through `file` or folded into `video` (see that ADR for why).
+// Upload-only, no URL variant; same lazy transcript extraction shape video/link nodes
+// now share. `notes` matches every other node's manual "notes for AI" field (F-16).
+export interface AudioNodeData extends Record<string, unknown> {
+  fileName: string;
+  storedName: string;
+  contentHash: string;
+  bytes: number;
+  extractionStatus?: "pending" | "ok" | "failed";
+  extractionPreview?: string | null;
   notes: string;
   cardWidth?: number;
   cardHeight?: number;
@@ -162,6 +224,28 @@ export interface GroupNodeData extends Record<string, unknown> {
   label: string;
   cardWidth: number;
   cardHeight: number;
+}
+
+// Phase 4 — first chat node (architecture.md §4.2, TF-07). `provider` picks which
+// adapter this node calls (ADR-0018 — a distinct provider per node, never a dropdown
+// that reconfigures the same node); `model` and `executionMode` are both independently
+// per-node settings (ADR-0019/ADR-0052) — two different nodes on the same board, even
+// same provider, can run different models or different execution modes without
+// affecting each other. `messages` is NOT stored here — chat_messages is the source of
+// truth server-side (chat.ts), fetched once on mount and appended to as the SSE stream
+// comes in; keeping it out of `data` avoids a second, divergent copy of the same
+// history living in two places.
+export interface ChatNodeData extends Record<string, unknown> {
+  provider: "claude" | "openai" | "gemini";
+  model: string;
+  executionMode: "local" | "native" | "manual";
+  /** Per-node free-text instruction (F-16) — included in context assembly alongside
+   * whatever's connected, never a replacement for it. */
+  notesForAI: string;
+  /** Brand/Voice Profile opt-in (F-21) — per-node, never applied globally/invisibly. */
+  useBrandProfile: boolean;
+  cardWidth?: number;
+  cardHeight?: number;
 }
 
 interface ServerNode {
@@ -330,6 +414,29 @@ interface BoardState {
   addTextNode: (position: { x: number; y: number }, content?: string) => Promise<void>;
   addLinkNode: (position: { x: number; y: number }, prefill?: Partial<LinkNodeData>) => Promise<void>;
   addFileNode: (position: { x: number; y: number }, file: File) => Promise<void>;
+  /** Phase 5 (ADR-0044's manual-override path) — forces a fresh yt-dlp/ffmpeg/whisper
+   * run for a video/audio/link node's "Re-extract" button regardless of what's already
+   * cached, via the long-running `/re-extract` route (lib/api.ts's `reExtractRequest`,
+   * not the default short-timeout `request()`). Optimistically marks the node
+   * `extractionStatus: "pending"` so the card updates immediately, and reverts on
+   * failure (the DB row never actually changed). */
+  reExtractNode: (nodeId: string) => Promise<void>;
+  /** ADR-0091 — fired automatically the instant a video/audio/link node's source becomes
+   * known (paste-to-create, file upload, or a link node's URL field committing), instead
+   * of waiting for ADR-0044's lazy chat-triggered path or a manual Re-extract click.
+   * Unlike `reExtractNode`, this is NOT forced — it respects the extraction_cache, so
+   * triggering it repeatedly for the same already-extracted source is cheap (a cache
+   * hit), not a wasted re-run of the pipeline. Fire-and-forget (not awaited by callers),
+   * same convention as `refreshVideoMetadata`/`refreshLinkPreview`. */
+  startExtraction: (nodeId: string) => void;
+  /** Re-syncs just `type`/`data` for the given node ids from the server — used after a
+   * chat-node SSE "extracting" event resolves, so the referenced video/audio/link
+   * node's card picks up its new transcript/status without a full board reload. */
+  refreshNodesData: (nodeIds: string[]) => Promise<void>;
+  /** Places a chat node for the given provider, pre-selecting that provider's default
+   * model (F-12: "never requires a choice before it's usable") — same toolbar-click
+   * pattern as addTextNode/addLinkNode. */
+  addChatNode: (position: { x: number; y: number }, provider: ChatNodeData["provider"]) => Promise<void>;
   /** Returns true if `url` was recognized as a YouTube/Vimeo link and a video node was created. */
   addVideoNodeFromUrl: (position: { x: number; y: number }, url: string) => Promise<boolean>;
   /** Converts an existing `link` node in place once its URL field resolves to a video platform. */
@@ -387,6 +494,13 @@ interface BoardState {
    * (whichever board that is), anchored at `position` (page.tsx's `centerPosition()`
    * for an explicit paste). A no-op if nothing's been copied yet. */
   pasteClipboard: (position: { x: number; y: number }) => Promise<void>;
+  /** Synchronous peek at whether the clipboard (above) actually has something in it —
+   * BUG-028: page.tsx's Ctrl+V keydown handler needs this BEFORE calling
+   * `pasteClipboard` (which is async, and was unconditionally calling
+   * `event.preventDefault()` regardless of whether there was anything to paste), so it
+   * can let a truly empty-clipboard Ctrl+V fall through to the browser's native paste
+   * event instead of silently swallowing it every time. */
+  hasClipboardContent: () => boolean;
   /** Clears every node's `selected` flag at once — the canvas page's pane-click handler
    * uses this (board-store.ts owns `nodes` in controlled mode, so React Flow's own
    * `useReactFlow().setNodes` can't be the one to do it; it would just be overwritten
@@ -1066,6 +1180,85 @@ export const useBoardStore = create<BoardState>((set, get) => {
       });
   }
 
+  // ADR-0091/ADR-0092 — background poller that picks up the REAL extraction outcome
+  // after a client-side timeout, instead of leaving the card stuck on the optimistic
+  // "pending" state forever. 20s between checks; gives up after 360 attempts (2 hours)
+  // as a sanity ceiling — media-extraction.ts's `transcribe()` step has no server-side
+  // timeout of its own, AND ADR-0092's bounded-concurrency queue means a node pasted
+  // near the end of a big batch (Istiyak's own example: 10 videos at once) can now
+  // spend real time just WAITING for a free slot before its own pipeline even starts,
+  // on top of however long that pipeline takes. 2 hours comfortably covers a sizeable
+  // batch of long videos; an abandoned poll is harmless (it's just a `refreshNodesData`
+  // call; no cleanup needed if the user navigates away — see that function's own
+  // board-mismatch no-op case), and even if the ceiling IS hit, the node's true status
+  // is already persisted server-side — reopening the board later shows the real
+  // outcome regardless of whether this particular poller gave up waiting for it.
+  function pollNodeUntilSettled(nodeId: string) {
+    const POLL_INTERVAL_MS = 20_000;
+    const MAX_ATTEMPTS = 360;
+    let attempts = 0;
+    const tick = () => {
+      attempts += 1;
+      get()
+        .refreshNodesData([nodeId])
+        .then(() => {
+          const node = get().nodes.find((n) => n.id === nodeId);
+          const data = (node?.data ?? {}) as Record<string, unknown>;
+          if (data.extractionStatus === "pending" && attempts < MAX_ATTEMPTS) {
+            setTimeout(tick, POLL_INTERVAL_MS);
+          }
+        });
+    };
+    setTimeout(tick, POLL_INTERVAL_MS);
+  }
+
+  // ADR-0091 — the eager, cache-respecting counterpart to `reExtractNode`'s forced
+  // manual override. Fires automatically once a video/audio/link node's source is known
+  // (see the `startExtraction` call sites: addLinkNode, addVideoNodeFromUrl,
+  // convertLinkNodeToVideo, the file-upload handler, and link-node.tsx's own
+  // URL-commit paths). Deliberately mirrors `reExtractNode`'s optimistic-pending +
+  // timeout-tolerant shape rather than sharing code with it outright — the two differ in
+  // exactly the two places that matter (force vs. not, and silent-automatic vs.
+  // toast-on-failure), and keeping them as separate, readable functions beats a shared
+  // helper parameterized on booleans for a codebase this size.
+  function triggerExtraction(nodeId: string) {
+    const { boardId } = get();
+    if (!boardId) return;
+    const current = get().nodes.find((n) => n.id === nodeId);
+    if (!current) return;
+    const optimisticPendingData: Record<string, unknown> = {
+      ...(current.data as Record<string, unknown>),
+      extractionStatus: "pending",
+      extractionPreview: null,
+    };
+    set((state) => ({
+      nodes: state.nodes.map((n) => (n.id === nodeId ? { ...n, data: optimisticPendingData } : n)),
+    }));
+    extractRequest<{ node: ServerNode }>(`/api/boards/${boardId}/nodes/${nodeId}/extract`)
+      .then(({ node }) => {
+        set((state) => ({ nodes: state.nodes.map((n) => (n.id === nodeId ? toRfNode(node) : n)) }));
+      })
+      .catch((err) => {
+        // A client-side timeout (ApiError status 0) does NOT mean the pipeline failed —
+        // it has no matching server-side deadline and may genuinely still be running
+        // (BUG-028's update 2 found this exact mismatch on the forced path; same fix
+        // applies here). Leave the optimistic "pending" showing — it still matches
+        // server reality — and poll for the real outcome instead of lying about it.
+        if (err instanceof ApiError && err.status === 0) {
+          pollNodeUntilSettled(nodeId);
+          return;
+        }
+        // Any other error here means the pipeline never actually ran — the server route
+        // only returns a non-200 for an invalid node (404/400, before extractMediaForNode
+        // is ever called), and extractMediaForNode itself never throws (media-extraction.ts:
+        // every real pipeline failure already resolves to a 200 with `extractionStatus:
+        // "failed"`, which the `.then()` branch above would have applied instead of
+        // landing here). So nothing changed server-side to revert away from — safe to
+        // just restore the pre-trigger snapshot.
+        set((state) => ({ nodes: state.nodes.map((n) => (n.id === nodeId ? current : n)) }));
+      });
+  }
+
   // Commits whatever's pending for `nodeId` (debounce tick or blur, whichever happens
   // first) and, if the final value actually differs from the edit session's baseline,
   // records one "update" history entry for the whole session — not one per keystroke.
@@ -1249,6 +1442,66 @@ export const useBoardStore = create<BoardState>((set, get) => {
       // A prefilled URL (paste-to-create) has no "blur" moment to trigger the fetch
       // from, so it's kicked off here directly instead.
       if (data.url) refreshLinkMetadata(rfNode.id, data.url);
+      // ADR-0091 — eager extraction. Safe to fire unconditionally here (no video-URL
+      // guard needed): the one real caller of this prefill path (page.tsx's
+      // paste-to-create handler) already tries `addVideoNodeFromUrl` FIRST and only
+      // falls back to `addLinkNode` when that returns false — i.e. `data.url` is never
+      // a recognized video URL by the time it reaches here, so there's no risk of this
+      // racing the separate trigger `convertLinkNodeToVideo` fires for that case.
+      if (data.url) triggerExtraction(rfNode.id);
+    },
+
+    // Mirrors each provider's own backend default-model tier (apps/server/src/
+    // providers/claude.ts etc.) — duplicated rather than fetched, same reasoning as
+    // SUPPORTED_FILE_EXTENSIONS above: small, static, and needed synchronously before
+    // any network call so a freshly placed node never shows a blank model selector.
+    addChatNode: async (position, provider) => {
+      const { boardId } = get();
+      if (!boardId) return;
+      const DEFAULT_MODEL: Record<ChatNodeData["provider"], string> = {
+        claude: "claude-sonnet-5-5",
+        openai: "gpt-5",
+        gemini: "gemini-3-pro",
+      };
+      // Execution mode has two homes by design (ADR-0019/F-12): Settings'
+      // provider_credentials.execution_mode is the DEFAULT a newly placed node of
+      // that provider starts with; ChatNodeData.executionMode is the per-node value
+      // chat.ts actually reads at send time, independently changeable afterwards
+      // without touching any other node. We seed from the Settings default here so
+      // the two stay in sync at placement time, falling back to "native" (the only
+      // mode Phase 4 makes functional) if providers haven't loaded yet.
+      const providerStatus = useSettingsStore.getState().providers.find((p) => p.provider === provider);
+      const data: ChatNodeData = {
+        provider,
+        model: DEFAULT_MODEL[provider],
+        executionMode: providerStatus?.executionMode ?? "native",
+        notesForAI: "",
+        useBrandProfile: false,
+        // NodeChrome's own un-resized default (w-56/224px, auto height) fits a short
+        // text snippet, not a message thread plus its own model/mode controls — unlike
+        // every other node type, a chat node is useless at that size before the user
+        // ever touches the resize handle, so it gets its own larger explicit starting
+        // size instead of inheriting the shared default.
+        //
+        // Visual-match pass (Istiyak: "make a Chat card bigger in size to fit all in
+        // context"): bumped again from 340×420 — that size was only ever enough for the
+        // message thread + composer; it had no room for the reference layout's own
+        // persistent sessions column (chat-node.tsx) alongside the thread, the session
+        // title bar, and the model-picker/quick-actions row under the composer all at
+        // once without tight scrolling. 620×680 fits all of that comfortably while still
+        // being well within NodeChrome's resize range in either direction.
+        cardWidth: 620,
+        cardHeight: 680,
+      };
+      const { node } = await api.post<{ node: ServerNode }>(`/api/boards/${boardId}/nodes`, {
+        type: "chat",
+        position_x: position.x,
+        position_y: position.y,
+        data,
+      });
+      const rfNode = toRfNode(node);
+      set((state) => ({ nodes: [...state.nodes, rfNode] }));
+      pushHistory({ kind: "create", node: rfNode });
     },
 
     addFileNode: async (position, file: File) => {
@@ -1262,37 +1515,67 @@ export const useBoardStore = create<BoardState>((set, get) => {
       // without duplicating the check at each call site.
       if (!isSupportedFileType(file.name)) {
         useToastStore.getState().showToast(
-          `"${file.name}" isn't a supported file type yet. Try a PDF, Word, Excel, or image file instead.`
+          `"${file.name}" isn't a supported file type yet. Try a PDF, Word, Excel, image, audio, or video file instead.`
         );
         return;
       }
 
       const formData = new FormData();
       formData.append("file", file);
+      // Phase 5 (ADR-0085/ADR-0086): the server classifies `mediaKind` ("document" |
+      // "audio" | "video") off the same upload — document-only fields
+      // (isImage/fileKind/extraction) are only present when mediaKind is "document".
       const upload = await uploadFile<{
         fileName: string;
         storedName: string;
         contentHash: string;
         bytes: number;
-        isImage: boolean;
-        fileKind: FileNodeData["fileKind"];
-        extraction: { status: FileNodeData["extractionStatus"]; preview: string | null };
+        mediaKind: "document" | "audio" | "video";
+        isImage?: boolean;
+        fileKind?: FileNodeData["fileKind"];
+        extraction?: { status: FileNodeData["extractionStatus"]; preview: string | null };
       }>("/api/files/upload", formData);
 
-      const data: FileNodeData = {
-        fileName: upload.fileName,
-        storedName: upload.storedName,
-        contentHash: upload.contentHash,
-        bytes: upload.bytes,
-        isImage: upload.isImage,
-        fileKind: upload.fileKind,
-        extractionStatus: upload.extraction.status,
-        extractionPreview: upload.extraction.preview,
-        notes: "",
-      };
+      let type: "file" | "audio" | "video";
+      let data: FileNodeData | AudioNodeData | VideoNodeData;
+      if (upload.mediaKind === "audio") {
+        type = "audio";
+        data = {
+          fileName: upload.fileName,
+          storedName: upload.storedName,
+          contentHash: upload.contentHash,
+          bytes: upload.bytes,
+          notes: "",
+        } satisfies AudioNodeData;
+      } else if (upload.mediaKind === "video") {
+        // Uploaded video file — the SAME `video` node type the URL path already uses
+        // (ADR-0086), just with `source: "upload"` instead of oEmbed metadata.
+        type = "video";
+        data = {
+          source: "upload",
+          fileName: upload.fileName,
+          storedName: upload.storedName,
+          contentHash: upload.contentHash,
+          bytes: upload.bytes,
+          notes: "",
+        } satisfies VideoNodeData;
+      } else {
+        type = "file";
+        data = {
+          fileName: upload.fileName,
+          storedName: upload.storedName,
+          contentHash: upload.contentHash,
+          bytes: upload.bytes,
+          isImage: upload.isImage ?? false,
+          fileKind: upload.fileKind ?? "other",
+          extractionStatus: upload.extraction?.status ?? "unsupported",
+          extractionPreview: upload.extraction?.preview ?? null,
+          notes: "",
+        } satisfies FileNodeData;
+      }
 
       const { node } = await api.post<{ node: ServerNode }>(`/api/boards/${boardId}/nodes`, {
-        type: "file",
+        type,
         position_x: position.x,
         position_y: position.y,
         data,
@@ -1300,6 +1583,80 @@ export const useBoardStore = create<BoardState>((set, get) => {
       const rfNode = toRfNode(node);
       set((state) => ({ nodes: [...state.nodes, rfNode] }));
       pushHistory({ kind: "create", node: rfNode });
+      // ADR-0091 — an uploaded audio/video file's source is fully known the instant the
+      // upload finishes (unlike a `link` node, which may still be an empty URL field at
+      // this point), so this is the earliest honest moment to start extraction.
+      if (type === "audio" || type === "video") triggerExtraction(rfNode.id);
+    },
+
+    reExtractNode: async (nodeId: string) => {
+      const { boardId } = get();
+      if (!boardId) return;
+      const current = get().nodes.find((n) => n.id === nodeId);
+      if (!current) return;
+      // Optimistic "pending" so the card shows something immediately — the server call
+      // below can take minutes (media-extraction.ts's own pipeline timeout), and this
+      // matches how the server itself marks the node `pending` the moment it starts
+      // (media-extraction.ts's `patchNodeExtractionState`).
+      // Named to avoid shadowing the module-level `pendingData` Map above (debounced
+      // text-edit saves) — unrelated despite the similar name.
+      const optimisticPendingData: Record<string, unknown> = {
+        ...(current.data as Record<string, unknown>),
+        extractionStatus: "pending",
+        extractionPreview: null,
+      };
+      set((state) => ({
+        nodes: state.nodes.map((n) => (n.id === nodeId ? { ...n, data: optimisticPendingData } : n)),
+      }));
+      try {
+        const { node } = await reExtractRequest<{ node: ServerNode }>(`/api/boards/${boardId}/nodes/${nodeId}/re-extract`);
+        set((state) => ({ nodes: state.nodes.map((n) => (n.id === nodeId ? toRfNode(node) : n)) }));
+      } catch (err) {
+        // ADR-0091 — a client-side timeout (ApiError status 0) is NOT the same as a real
+        // failure: media-extraction.ts's `transcribe()` step has no server-side timeout
+        // of its own, so a long video can legitimately still be running on the backend
+        // well past our own wait window. The bug this fixes: reverting straight to
+        // `current` here used to flash the card back to whatever it showed BEFORE this
+        // click — often a stale "failed" from an earlier, unrelated problem — directly
+        // underneath a toast that says the opposite ("may still finish in the
+        // background"). Now a timeout leaves the optimistic "pending" in place (it
+        // matches server reality) and polls for the real outcome instead.
+        if (err instanceof ApiError && err.status === 0) {
+          useToastStore.getState().showToast(err.message);
+          pollNodeUntilSettled(nodeId);
+          return;
+        }
+        useToastStore
+          .getState()
+          .showToast(err instanceof Error ? err.message : "Couldn't re-extract this node's content. Please try again.");
+        // Revert the optimistic "pending" — the actual DB row never changed (re-extract's
+        // route only fails before extractMediaForNode runs; see triggerExtraction's own
+        // matching comment above for why that's true of both extraction routes).
+        set((state) => ({ nodes: state.nodes.map((n) => (n.id === nodeId ? current : n)) }));
+      }
+    },
+
+    // Lightweight re-sync for nodes extraction touched mid-chat (chat-node.tsx, after an
+    // "extracting" SSE event) — refetches the WHOLE board's nodes (there's no per-node
+    // GET route) but only merges `data`/`type` for the ids actually asked for, so an
+    // in-flight drag or unrelated local edit elsewhere on the board isn't clobbered by a
+    // stale position/size from this fetch.
+    refreshNodesData: async (nodeIds: string[]) => {
+      const { boardId } = get();
+      if (!boardId || nodeIds.length === 0) return;
+      try {
+        const { nodes: serverNodes } = await api.get<{ nodes: ServerNode[] }>(`/api/boards/${boardId}/nodes`);
+        const byId = new Map(serverNodes.map((n) => [n.id, n]));
+        set((state) => ({
+          nodes: state.nodes.map((n) => {
+            const fresh = nodeIds.includes(n.id) ? byId.get(n.id) : undefined;
+            return fresh ? { ...n, type: fresh.type, data: fresh.data as Record<string, unknown> } : n;
+          }),
+        }));
+      } catch {
+        // Best-effort — the node's card just won't show its new status until the next
+        // full board load; nothing in this app depends on this refresh succeeding.
+      }
     },
 
     addVideoNodeFromUrl: async (position, url) => {
@@ -1309,6 +1666,7 @@ export const useBoardStore = create<BoardState>((set, get) => {
       if (!boardId) return false;
 
       const data: VideoNodeData = {
+        source: "url",
         url,
         platform: match.platform,
         videoId: match.videoId,
@@ -1328,6 +1686,7 @@ export const useBoardStore = create<BoardState>((set, get) => {
       set((state) => ({ nodes: [...state.nodes, rfNode] }));
       pushHistory({ kind: "create", node: rfNode });
       refreshVideoMetadata(rfNode.id, url);
+      triggerExtraction(rfNode.id); // ADR-0091
       return true;
     },
 
@@ -1340,6 +1699,7 @@ export const useBoardStore = create<BoardState>((set, get) => {
       const fromSnapshot = { type: current.type, data: current.data as Record<string, unknown> };
       const oldLinkData = current.data as LinkNodeData;
       const nextData: VideoNodeData = {
+        source: "url",
         url,
         platform: match.platform,
         videoId: match.videoId,
@@ -1353,11 +1713,16 @@ export const useBoardStore = create<BoardState>((set, get) => {
       commitNodeTypeAndData(nodeId, "video", nextData);
       pushHistory({ kind: "update", nodeId, from: fromSnapshot, to: { type: "video", data: nextData } });
       refreshVideoMetadata(nodeId, url);
+      triggerExtraction(nodeId); // ADR-0091
       return true;
     },
 
     refreshLinkPreview: (nodeId, url) => {
       refreshLinkMetadata(nodeId, url);
+    },
+
+    startExtraction: (nodeId) => {
+      triggerExtraction(nodeId);
     },
 
     updateNodeData: (nodeId, data) => {
@@ -1528,6 +1893,8 @@ export const useBoardStore = create<BoardState>((set, get) => {
       if (!clipboard) return;
       await materializeTemplate(clipboard, position.x, position.y);
     },
+
+    hasClipboardContent: () => clipboard !== null,
 
     deselectAllNodes: () => {
       set((s) => ({ nodes: s.nodes.map((n) => (n.selected ? { ...n, selected: false } : n)) }));

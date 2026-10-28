@@ -19,14 +19,17 @@ import {
   type IsValidConnection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Type, Link2, FileUp, Undo2, Redo2, Plus, Minus, Maximize2 } from "lucide-react";
-import { useBoardStore, RF_GROUP_TYPE } from "@/stores/board-store";
+import { Type, Link2, FileUp, Bot, Cpu, Gem, Undo2, Redo2, Plus, Minus, Maximize2 } from "lucide-react";
+import { useBoardStore, RF_GROUP_TYPE, type ChatNodeData } from "@/stores/board-store";
 import { useToastStore } from "@/stores/toast-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { TextNode } from "@/components/canvas/text-node";
 import { FileNode } from "@/components/canvas/file-node";
 import { LinkNode } from "@/components/canvas/link-node";
 import { VideoNode } from "@/components/canvas/video-node";
+import { AudioNode } from "@/components/canvas/audio-node";
 import { GroupNode } from "@/components/canvas/group-node";
+import { ChatNode } from "@/components/canvas/chat-node";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { Button } from "@/components/ui/button";
 import { ToastHost } from "@/components/ui/toast-host";
@@ -39,8 +42,20 @@ const nodeTypes: NodeTypes = {
   file: FileNode,
   link: LinkNode,
   video: VideoNode,
+  audio: AudioNode,
+  chat: ChatNode,
   [RF_GROUP_TYPE]: GroupNode,
 };
+
+// Phase 4 — one toolbar button per provider's chat node. Icon/label duplicated from
+// chat-node.tsx's own PROVIDER_ICONS/PROVIDER_LABELS rather than imported — these are
+// two different UI surfaces (a toolbar glyph vs. a card header) that happen to agree
+// today, not one shared concept that must always stay in lockstep.
+const CHAT_PROVIDERS: Array<{ provider: ChatNodeData["provider"]; label: string; icon: React.ElementType }> = [
+  { provider: "claude", label: "Add Claude chat", icon: Bot },
+  { provider: "openai", label: "Add OpenAI chat", icon: Cpu },
+  { provider: "gemini", label: "Add Gemini chat", icon: Gem },
+];
 
 // Grouping (Phase 3) — padding around the selected members' combined bounding box when
 // Ctrl+G computes a new group's frame (handleGroupShortcut below). Purely cosmetic
@@ -113,12 +128,14 @@ function CanvasShell({ boardId }: { boardId: string }) {
     addTextNode,
     addLinkNode,
     addFileNode,
+    addChatNode,
     addVideoNodeFromUrl,
     groupSelectedNodes,
     ungroupNode,
     duplicateSelection,
     copySelection,
     pasteClipboard,
+    hasClipboardContent,
     deselectAllNodes,
     undo,
     redo,
@@ -127,6 +144,18 @@ function CanvasShell({ boardId }: { boardId: string }) {
   const canRedo = useBoardStore((state) => state.future.length > 0);
   const { screenToFlowPosition, zoomIn, zoomOut, fitView, getNodes } = useReactFlow();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Phase 4 — gates the three chat-provider toolbar buttons below by the same
+  // `isConfigured()` the backend itself checks at send time (chat.ts), so a button
+  // is never clickable here only to have the very first send fail for lack of a key.
+  // Settings is the only other place this loads today, so a board opened directly
+  // (no prior Settings visit this session) needs its own load, same pattern as there.
+  const providers = useSettingsStore((state) => state.providers);
+  const providersLoaded = useSettingsStore((state) => state.providersLoaded);
+  const loadProviders = useSettingsStore((state) => state.loadProviders);
+  React.useEffect(() => {
+    if (!providersLoaded) loadProviders();
+  }, [providersLoaded, loadProviders]);
   // error-handling-conventions.md: data-mutating actions disable their control for the
   // duration of the in-flight request — a file upload (saves a file + creates a node)
   // qualifies, and without this a second click while one upload is still running could
@@ -291,15 +320,40 @@ function CanvasShell({ boardId }: { boardId: string }) {
         // Paste (Phase 3, F-19) — materializes whatever's in OUR clipboard onto
         // whichever board is currently loaded (works across a board switch precisely
         // because that clipboard lives outside this store's per-board state — see its
-        // own comment in board-store.ts). A no-op if nothing's been copied yet, so this
-        // never fights with the native OS-paste handler below over an empty selection.
-        event.preventDefault();
-        pasteClipboard(centerPosition());
+        // own comment in board-store.ts).
+        //
+        // BUG-028 fix: this used to call `event.preventDefault()` unconditionally, on
+        // EVERY Ctrl+V, regardless of whether our own clipboard actually had anything
+        // in it — the comment here claimed that made it "a no-op... [that] never fights
+        // with the native OS-paste handler below," but `preventDefault()` on this
+        // `keydown` event runs BEFORE the browser ever generates the native `paste`
+        // event that handler listens for, so an empty internal clipboard was silently
+        // swallowing every single Ctrl+V on bare canvas — including the one the OTHER
+        // paste handler below needs to create a link/video/text node from whatever's
+        // actually on the OS clipboard (Istiyak: "copy paste on canvas doesn't work").
+        // Mirrors the "c" (copy) branch above: only intercept when there's actually
+        // something of OURS to act on; an empty clipboard now falls straight through to
+        // the native paste event instead of being eaten here first.
+        if (hasClipboardContent()) {
+          event.preventDefault();
+          pasteClipboard(centerPosition());
+        }
       }
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [undo, redo, getNodes, groupSelectedNodes, ungroupNode, duplicateSelection, copySelection, pasteClipboard, centerPosition]);
+  }, [
+    undo,
+    redo,
+    getNodes,
+    groupSelectedNodes,
+    ungroupNode,
+    duplicateSelection,
+    copySelection,
+    pasteClipboard,
+    hasClipboardContent,
+    centerPosition,
+  ]);
 
   // Paste-to-create (Istiyak: "paste a URL directly onto the canvas" originally did
   // nothing — he had to add a link node first, then paste inside it; round 2 widened
@@ -497,6 +551,33 @@ function CanvasShell({ boardId }: { boardId: string }) {
             disabled: isUploading,
             busy: isUploading,
           },
+          ...CHAT_PROVIDERS.map(({ provider, label, icon }) => {
+            const status = providers.find((p) => p.provider === provider);
+            const isConfigured = Boolean(status?.isConfigured);
+            // Istiyak (Phase 4 follow-up): a key is only required for Native API — Local
+            // LLM and Manual Input need no key at all (F-12: "Local LLM — no key
+            // needed"), so gating EVERY provider's placement on isConfigured blocked
+            // exactly the workflow those two modes exist for. A newly placed node is
+            // seeded from this provider's Settings "Default execution mode"
+            // (board-store.ts's addChatNode) — so if that default is already Local LLM
+            // or Manual Input, the node needs no key to be usable the moment it lands,
+            // and placement is allowed on that basis alone. Only when the default is
+            // still Native API (the out-of-the-box default) and no key is saved does
+            // placing the node lead nowhere, so that's the only case still blocked.
+            const startsKeyless = status?.executionMode === "local" || status?.executionMode === "manual";
+            const canPlace = isConfigured || startsKeyless;
+            return {
+              key: `chat-${provider}`,
+              icon,
+              onClick: () => addChatNode(centerPosition(), provider),
+              disabled: !providersLoaded || !canPlace,
+              label: !providersLoaded
+                ? label
+                : canPlace
+                  ? label
+                  : `${label} — add a key, or set its default mode to Local LLM/Manual Input in Settings`,
+            };
+          }),
         ]}
       />
       <input
@@ -508,7 +589,10 @@ function CanvasShell({ boardId }: { boardId: string }) {
         // by default, and a user can usually still override it to "All Files," plus it
         // does nothing at all for drag-drop or OS paste. addFileNode's own check is
         // what actually blocks an unsupported type from reaching the board.
-        accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.gif,.webp,.svg,.bmp,.heic"
+        // Phase 5 (ADR-0085/ADR-0086): widened to include the new audio/video upload
+        // extensions, kept in sync with board-store.ts's AUDIO_UPLOAD_EXTENSIONS/
+        // VIDEO_UPLOAD_EXTENSIONS exactly as this already tracks SUPPORTED_FILE_EXTENSIONS.
+        accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.gif,.webp,.svg,.bmp,.heic,.mp3,.wav,.m4a,.ogg,.flac,.aac,.mp4,.mov,.webm,.mkv,.avi"
         className="hidden"
         onChange={handleFileChosen}
         disabled={isUploading}

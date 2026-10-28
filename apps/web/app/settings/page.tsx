@@ -6,7 +6,7 @@ import { ArrowLeft, KeyRound, MessageSquareText } from "lucide-react";
 import { useSettingsStore } from "@/stores/settings-store";
 import { ProviderKeyField } from "@/components/settings/provider-key-field";
 import { ExecutionModeSelector } from "@/components/settings/execution-mode-selector";
-import { ToolsPanelStub } from "@/components/settings/tools-panel-stub";
+import { ToolsPanel } from "@/components/settings/tools-panel";
 import { BrandProfileEditor } from "@/components/settings/brand-profile-editor";
 
 export default function SettingsPage() {
@@ -61,7 +61,7 @@ export default function SettingsPage() {
 
           {providersLoaded ? (
             <div className="mt-4">
-              <ToolsPanelStub providers={providers} />
+              <ToolsPanel providers={providers} />
             </div>
           ) : null}
         </section>

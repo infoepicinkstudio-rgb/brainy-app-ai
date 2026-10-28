@@ -22,6 +22,20 @@ const MIME_BY_EXT: Record<string, string> = {
   svg: "image/svg+xml",
   bmp: "image/bmp",
   heic: "image/heic",
+  // Phase 5 (ADR-0085/ADR-0086) — audio/video uploads are served back through this same
+  // GET route (download links on audio-node.tsx/video-node.tsx), so they need a real
+  // Content-Type too, same as every other stored upload.
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  m4a: "audio/mp4",
+  ogg: "audio/ogg",
+  flac: "audio/flac",
+  aac: "audio/aac",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  mkv: "video/x-matroska",
+  avi: "video/x-msvideo",
 };
 
 function extOf(filename: string): string {
@@ -37,6 +51,15 @@ function extOf(filename: string): string {
 // kept in sync with the same extension set (and with extraction.ts's own
 // `IMAGE_EXTENSIONS`/`supported` lists, which this was already duplicating one layer
 // down).
+//
+// Phase 5 (ADR-0085/ADR-0086): audio/video extensions are exactly the ones that
+// comment above was deliberately deferring ("mp3 mp4 ... not supported yet") — they're
+// accepted here now, but routed to a DIFFERENT node type than everything else in this
+// set (see `mediaKindOf` below and board-store.ts's `addFileNode`), never through
+// `extractForFile`'s pdf/docx/xlsx path.
+const AUDIO_EXTENSIONS = new Set(["mp3", "wav", "m4a", "ogg", "flac", "aac"]);
+const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "avi"]);
+
 const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
   "pdf",
   "doc",
@@ -51,9 +74,24 @@ const SUPPORTED_UPLOAD_EXTENSIONS = new Set([
   "svg",
   "bmp",
   "heic",
+  ...AUDIO_EXTENSIONS,
+  ...VIDEO_EXTENSIONS,
 ]);
 
 export type FileKind = "pdf" | "docx" | "xlsx" | "image" | "other";
+export type MediaKind = "document" | "audio" | "video";
+
+// Decides which node type an upload becomes (board-store.ts's `addFileNode`) — checked
+// BEFORE `fileKind`/`extractForFile`, since audio/video never go through either of
+// those (they get their own lazy transcript pipeline, media-extraction.ts, not
+// pdf-parse/mammoth/xlsx, and not at upload time at all — ADR-0044's "extract only on
+// actual demand" reasoning applies to these exactly as much as it does to a video link).
+function mediaKindOf(filename: string): MediaKind {
+  const ext = extOf(filename);
+  if (AUDIO_EXTENSIONS.has(ext)) return "audio";
+  if (VIDEO_EXTENSIONS.has(ext)) return "video";
+  return "document";
+}
 
 // Round 2 (Istiyak: "File uploads should get type-specific visual treatment by file
 // type... Office's own color conventions, blue/green/red etc."). Detected by extension
@@ -90,6 +128,24 @@ export async function filesRoutes(app: FastifyInstance) {
     }
 
     const saved = await saveUpload(buffer, file.filename);
+    const mediaKind = mediaKindOf(file.filename);
+
+    // Audio/video (ADR-0085/ADR-0086): no extraction attempted here at all — the
+    // storage step above is the only thing audio/video actually needs from this route;
+    // the lazy yt-dlp/ffmpeg/whisper pipeline runs later, on an actual chat reference or
+    // an explicit Re-extract (media-extraction.ts). `fileKind`/`extractForFile` are
+    // document-shaped concerns (Office-color icon system, pdf-parse/mammoth/xlsx) that
+    // never applied to these anyway.
+    if (mediaKind !== "document") {
+      return {
+        fileName: file.filename,
+        storedName: saved.storedName,
+        contentHash: saved.contentHash,
+        bytes: saved.bytes,
+        mediaKind,
+      };
+    }
+
     const extraction = await extractForFile(buffer, file.filename, saved.contentHash);
     const isImage = isImageExtension(file.filename);
     const fileKind = fileKindOf(file.filename);
@@ -101,6 +157,7 @@ export async function filesRoutes(app: FastifyInstance) {
       bytes: saved.bytes,
       isImage,
       fileKind,
+      mediaKind,
       extraction: {
         status: extraction.status,
         // The extracted text itself can be large — the node's `data` column doesn't

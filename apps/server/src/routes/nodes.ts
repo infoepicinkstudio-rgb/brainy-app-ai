@@ -9,9 +9,13 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq, or } from "drizzle-orm";
 import { db } from "../db/client.js";
-import { nodes, edges, chat_messages } from "../db/schema.js";
+import { nodes, edges, chat_messages, chat_sessions } from "../db/schema.js";
+import { extractMediaForNode } from "../lib/media-extraction.js";
 
-const NODE_TYPES = ["text", "video", "file", "link", "chat", "mindmap", "group"] as const;
+// "audio" added for Phase 5 (ADR-0085) — a dedicated node type for uploaded audio
+// files, upload-only (no URL variant), alongside the pre-existing "video" (now
+// URL-or-upload, ADR-0086).
+const NODE_TYPES = ["text", "video", "file", "link", "chat", "mindmap", "group", "audio"] as const;
 type NodeType = (typeof NODE_TYPES)[number];
 
 function isNodeType(value: string): value is NodeType {
@@ -205,9 +209,56 @@ export async function nodesRoutes(app: FastifyInstance) {
         .update(nodes)
         .set({ parent_node_id: null, updated_at: new Date().toISOString() })
         .where(eq(nodes.parent_node_id, nodeId));
+      // Messages before sessions — chat_messages.session_id references chat_sessions.id,
+      // so a session can't be removed first without first clearing what points at it.
       await db.delete(chat_messages).where(eq(chat_messages.node_id, nodeId));
+      await db.delete(chat_sessions).where(eq(chat_sessions.node_id, nodeId));
       await db.delete(nodes).where(eq(nodes.id, nodeId));
       return reply.code(204).send();
+    }
+  );
+
+  // Phase 5 (ADR-0044's caching strategy, confirmed with Istiyak: cache forever, manual
+  // override only) — forces a fresh pipeline run regardless of what's already in
+  // extraction_cache for this source, for a video/audio/link node whose source content
+  // has genuinely changed (or that failed before and is worth retrying). This can take
+  // minutes (media-extraction.ts's own pipeline timeout) — the frontend calls this with
+  // a long-running request, not the default short API timeout (lib/api.ts).
+  app.post<{ Params: { boardId: string; nodeId: string } }>(
+    "/api/boards/:boardId/nodes/:nodeId/re-extract",
+    async (request, reply) => {
+      const { nodeId } = request.params;
+      const [node] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+      if (!node) return reply.code(404).send({ error: "Node not found." });
+      if (node.type !== "video" && node.type !== "audio" && node.type !== "link") {
+        return reply.code(400).send({ error: "This node type doesn't support transcript extraction." });
+      }
+      const result = await extractMediaForNode(node, { force: true });
+      const [updated] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+      return { node: updated, extraction: { status: result.status, preview: result.preview } };
+    }
+  );
+
+  // ADR-0091 — eager extraction on card creation. Sibling of `/re-extract` above but
+  // deliberately NOT forced: board-store.ts's `startExtraction` calls this automatically
+  // the instant a video/audio/link node's source becomes known (paste-to-create, file
+  // upload, or a link node's URL field committing), so it MUST respect the
+  // extraction_cache (ADR-0044) rather than re-running the full pipeline every time —
+  // unlike `/re-extract`, which is a rare, explicit user action where forcing is the
+  // whole point. Same long-running budget as `/re-extract` (the frontend calls this with
+  // `extractRequest`, not the short-timeout default).
+  app.post<{ Params: { boardId: string; nodeId: string } }>(
+    "/api/boards/:boardId/nodes/:nodeId/extract",
+    async (request, reply) => {
+      const { nodeId } = request.params;
+      const [node] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+      if (!node) return reply.code(404).send({ error: "Node not found." });
+      if (node.type !== "video" && node.type !== "audio" && node.type !== "link") {
+        return reply.code(400).send({ error: "This node type doesn't support transcript extraction." });
+      }
+      const result = await extractMediaForNode(node);
+      const [updated] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+      return { node: updated, extraction: { status: result.status, preview: result.preview } };
     }
   );
 }
