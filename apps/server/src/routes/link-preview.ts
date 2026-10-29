@@ -69,6 +69,16 @@ interface OEmbedResponse {
   title?: string;
   thumbnail_url?: string;
   author_name?: string;
+  // Round 1 UX #9 (Istiyak: "Video preview thumbnails should match source aspect ratio
+  // — 16:9 YouTube, 9:16 Shorts/Reels"). Both YouTube's and Vimeo's oEmbed responses
+  // already include the actual pixel dimensions of thumbnail_url — a vertical Short's
+  // thumbnail comes back with thumbnail_height > thumbnail_width, a normal video's the
+  // other way around — so this is the real source of truth for aspect ratio, not a
+  // guess from the URL shape (youtube.com/shorts/... gets normalized away to a plain
+  // /watch?v= URL before this ever runs — see parseYouTubeVideoId above — so the URL
+  // alone can't tell a Short from a normal upload at this point anyway).
+  thumbnail_width?: number;
+  thumbnail_height?: number;
 }
 
 async function fetchOembed(oembedUrl: string): Promise<OEmbedResponse | null> {
@@ -234,6 +244,8 @@ export async function linkPreviewRoutes(app: FastifyInstance) {
         title: body.title ?? "",
         thumbnailUrl: body.thumbnail_url ?? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
         authorName: body.author_name ?? "",
+        thumbnailWidth: body.thumbnail_width,
+        thumbnailHeight: body.thumbnail_height,
       };
     }
 
@@ -254,6 +266,8 @@ export async function linkPreviewRoutes(app: FastifyInstance) {
         title: body.title ?? "",
         thumbnailUrl: body.thumbnail_url ?? "",
         authorName: body.author_name ?? "",
+        thumbnailWidth: body.thumbnail_width,
+        thumbnailHeight: body.thumbnail_height,
       };
     }
 

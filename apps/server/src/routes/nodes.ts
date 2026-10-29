@@ -10,7 +10,7 @@ import type { FastifyInstance } from "fastify";
 import { and, eq, or } from "drizzle-orm";
 import { db } from "../db/client.js";
 import { nodes, edges, chat_messages, chat_sessions } from "../db/schema.js";
-import { extractMediaForNode } from "../lib/media-extraction.js";
+import { extractMediaForNode, cancelExtractionForNode } from "../lib/media-extraction.js";
 
 // "audio" added for Phase 5 (ADR-0085) — a dedicated node type for uploaded audio
 // files, upload-only (no URL variant), alongside the pre-existing "video" (now
@@ -198,6 +198,13 @@ export async function nodesRoutes(app: FastifyInstance) {
     "/api/boards/:boardId/nodes/:nodeId",
     async (request, reply) => {
       const { nodeId } = request.params;
+      // BUG-033 — stop this node's extraction before touching the DB, not after: if it's
+      // still queued (ADR-0092) this skips the pipeline entirely, and if it's actively
+      // running yt-dlp/ffmpeg this kills that subprocess immediately, instead of leaving
+      // it to run a full pipeline for a node that's about to not exist (media-extraction.ts's
+      // own comment on activeExtractionsByNode has the full reasoning, including the one
+      // remaining gap: an in-flight whisper step itself can't be interrupted).
+      cancelExtractionForNode(nodeId);
       const boardEdges = await db.select().from(edges).where(eq(edges.board_id, request.params.boardId));
       const connectedEdgeIds = boardEdges
         .filter((edge) => edge.source_node_id === nodeId || edge.target_node_id === nodeId)

@@ -24,6 +24,8 @@ import { nodesRoutes } from "./routes/nodes.js";
 import { filesRoutes } from "./routes/files.js";
 import { linkPreviewRoutes } from "./routes/link-preview.js";
 import { chatRoutes } from "./routes/chat.js";
+import { youtubeCredentialsRoutes } from "./routes/youtube-credentials.js";
+import { outliersRoutes } from "./routes/outliers.js";
 
 const PORT = Number(process.env.PORT ?? 4000);
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "http://localhost:3000";
@@ -86,6 +88,10 @@ await app.register(linkPreviewRoutes);
 
 // Phase 4 — First chat node (architecture.md §4.2/§4.3, TF-07/TF-08).
 await app.register(chatRoutes);
+
+// Phase 6 — Outliers research panel (F-15/TF-09, ADR-0100).
+await app.register(youtubeCredentialsRoutes);
+await app.register(outliersRoutes);
 
 try {
   await app.listen({ port: PORT, host: "localhost" });

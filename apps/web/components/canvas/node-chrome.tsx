@@ -95,6 +95,21 @@ export const RIBBON_SOLID_CLASSES: Record<NodeAccent, string> = {
   accent: "bg-ribbon-solid-accent",
 };
 
+// Round 5 follow-up (Istiyak: "Reached to certain stage but still not completely
+// adapted" — the dots were barely visible against the canvas, especially the cooler
+// accents). This used to be a `Record<NodeAccent, string>` of `border-ribbon-solid-*`
+// Tailwind classes; moved to a plain function returning the raw CSS var instead (used as
+// an inline `style.borderColor` on each Handle below) rather than risk a brand-new
+// `border-*` utility family this codebase had never actually exercised before — bg-*/
+// ring-*/text-* against these same tokens are all proven elsewhere in this file, but
+// border-* wasn't, and an inline style is the one way to rule out any such Tailwind
+// generation gap entirely rather than debug it blind without a way to render the page
+// here. Same six token names as every other `RIBBON_*` map in this file, just read as a
+// border color instead of a background/text/ring color.
+export function ribbonSolidVar(accent: NodeAccent): string {
+  return `var(--color-ribbon-solid-${accent})`;
+}
+
 // ADR-0075 (round 6, Istiyak: "Hover/select is currently showing brand accent color and
 // gray shadows which looks contradict from card style... youtube card will have its own
 // hover style, link will have its own hover style"): restored here after drifting back
@@ -124,6 +139,58 @@ export const RIBBON_RING_HOVER_CLASSES: Record<NodeAccent, string> = {
   warning: "hover:ring-1 hover:ring-ribbon-fg-warning/25",
   accent: "hover:ring-1 hover:ring-ribbon-fg-accent/25",
 };
+
+// Round 5 (new) — Istiyak, reference screenshot (several cards converging on one chat
+// node with color-matched dots + gradient lines): "give all the node connect dots the
+// [same] individual card types['] ... youtube card nodes dots should look like that
+// cards dot. Same goes with other types." The handle dots below already read `accent`
+// straight from THIS card's own `NodeChrome` prop — but canvas-edge.tsx's gradient line
+// only ever sees two node IDs (an edge has no view of either node's own JSX), so it
+// needs this same "what accent is this node" logic available from OUTSIDE any one node
+// file. Mirrors each node type's own accent branch exactly:
+// - text/mindmap-node.tsx: fixed "info"
+// - chat/audio-node.tsx: fixed "accent"
+// - video-node.tsx: upload or non-YouTube (Vimeo) → "accent", YouTube → "danger"
+// - file-node.tsx: per fileKind (FILE_KIND_ACCENT there) — duplicated below rather than
+//   imported, since file-node.tsx itself imports FROM this file; importing back from it
+//   would invert that dependency. Keep the two maps in sync by hand if file-node.tsx's
+//   own FILE_KIND_ACCENT ever changes.
+// - link-node.tsx / group frame: fixed "neutral"
+const FILE_KIND_ACCENT_FOR_EDGES: Record<string, NodeAccent> = {
+  pdf: "danger",
+  docx: "info",
+  xlsx: "success",
+  image: "neutral",
+  other: "warning",
+};
+
+export function getNodeAccent(node: { type?: string; data?: unknown } | null | undefined): NodeAccent {
+  if (!node) return "neutral";
+  const data = (node.data ?? {}) as Record<string, unknown>;
+  switch (node.type) {
+    case "text":
+    case "mindmap":
+      return "info";
+    case "chat":
+    case "audio":
+      return "accent";
+    case "video": {
+      const isUpload = data.source === "upload";
+      const isYoutube = data.platform !== "vimeo";
+      return !isUpload && isYoutube ? "danger" : "accent";
+    }
+    case "file": {
+      const fileKind = (data.fileKind as string | undefined) ?? (data.isImage ? "image" : "other");
+      return FILE_KIND_ACCENT_FOR_EDGES[fileKind] ?? "warning";
+    }
+    default:
+      // Covers "link", the group frame type (RF_GROUP_TYPE — importing the literal
+      // string here would pull board-store.ts into this file's dependency graph for one
+      // constant; "groupFrame" falls through to the same "neutral" default it already
+      // resolves to), and any future node type that hasn't set its own case yet.
+      return "neutral";
+  }
+}
 
 // Round 2 (ADR-0070): resizable cards. No new DB column — the resized size is mirrored
 // into the node's existing `data` JSON blob (`cardWidth`/`cardHeight`, board-store.ts).
@@ -252,32 +319,34 @@ export const NodeChrome = React.memo(function NodeChrome({
           existed; it does now. One target (left) + one source (right) per card, the
           same left-to-right convention React Flow's own examples use, colored from the
           card's own accent so a board with several node types still reads which handle
-          belongs to which card once two are close together. Faint at rest, fully opaque
-          on card hover — a permanently loud dot on every idle card would be worse
-          clutter than the earlier "deliberately deferred" blank edge was. React Flow's
-          base stylesheet sets its own size/border/color with enough specificity that a
-          plain Tailwind class loses to it, same reasoning as the resize handle's
-          `!`-prefixed overrides below. Hidden entirely once this card has a parent
+          belongs to which card once two are close together.
+          Round 5, 4th follow-up (Istiyak: "Chevron is unnecessary. Node dots can be
+          smaller and outside the card"): the bracket decoration from the last two
+          rounds is gone outright (not hidden behind a flag — removed, along with the
+          now-unused `useNodeConnections` check that gated it). The `!z-20` fix (dot
+          painting above ordinary card content instead of being covered by it) and the
+          inline `style.borderColor` fix (bulletproof regardless of Tailwind's `border-*`
+          generation) both stay — those solved real visibility bugs, confirmed working in
+          the screenshot that prompted this round. Only the SIZE moved again: 18px → 13px
+          and the ring 3px → 2px (a thinner ring reads right at this smaller scale; 3px
+          at 13px would leave almost no visible "hole"). Offset bumped slightly past the
+          prior 65/35 split to 70/30 (-0.7 × 13px ≈ -9px) so it reads clearly outside the
+          edge even at the smaller size, not just smaller AND more ambiguous about being
+          on-or-off the card. Hidden entirely once this card has a parent
           (`hideConnections`) — see that prop's own doc comment above. */}
       {!hideConnections ? (
         <>
           <Handle
             type="target"
             position={Position.Left}
-            className={cn(
-              "!size-3 !border-2 !border-background-surface opacity-50 transition-opacity duration-fast",
-              "group-hover:opacity-100",
-              RIBBON_SOLID_CLASSES[accent]
-            )}
+            style={{ transform: "translate(-70%, -50%)", borderColor: ribbonSolidVar(accent) }}
+            className="!z-20 !size-[13px] !border-2 !bg-background-surface !shadow-surface-raised"
           />
           <Handle
             type="source"
             position={Position.Right}
-            className={cn(
-              "!size-3 !border-2 !border-background-surface opacity-50 transition-opacity duration-fast",
-              "group-hover:opacity-100",
-              RIBBON_SOLID_CLASSES[accent]
-            )}
+            style={{ transform: "translate(70%, -50%)", borderColor: ribbonSolidVar(accent) }}
+            className="!z-20 !size-[13px] !border-2 !bg-background-surface !shadow-surface-raised"
           />
         </>
       ) : null}

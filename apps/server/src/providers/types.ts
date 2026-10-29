@@ -67,6 +67,13 @@ export interface ChatInput {
    * (Istiyak: "thinking on/off"). See claude.ts's own comment on why this is a
    * DISPLAY toggle, not a request parameter, for Claude's current model generation. */
   thinkingEnabled?: boolean;
+  /** Round 1 bug #4 (Istiyak: "User should be able to stop response in between") —
+   * routes/chat.ts aborts this when the client disconnects (tab closed, or the
+   * composer's own Stop button), so every adapter forwards it straight into its own
+   * `fetch` call rather than letting an abandoned response keep running against the
+   * provider after nobody's listening for it. Optional: a caller with no cancel
+   * affordance of its own (generate-mindmap's one-shot call) just omits it. */
+  signal?: AbortSignal;
 }
 
 export type ChatChunk =

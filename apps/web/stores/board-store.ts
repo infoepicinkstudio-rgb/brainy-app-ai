@@ -34,8 +34,10 @@ import { useSettingsStore } from "@/stores/settings-store";
 
 // "audio" added for Phase 5 (ADR-0085) — a dedicated node type for uploaded audio
 // files, upload-only (no URL variant); "video" already covers both URL and upload
-// sources as of ADR-0086 (VideoNodeData.source).
-export type BrainyNodeType = "text" | "file" | "link" | "video" | "chat" | "audio";
+// sources as of ADR-0086 (VideoNodeData.source). "mindmap" added for Phase 6
+// (ADR-0101) — an OUTPUT-only node type, never created from the toolbar (there's no
+// "Add mindmap" button — see canvas-toolbar.tsx), only ever via addMindmapNode below.
+export type BrainyNodeType = "text" | "file" | "link" | "video" | "chat" | "audio" | "mindmap";
 
 // Phase 3 bug-fix round (Istiyak: "IF file type doesn't supported then it should not
 // have come to board... mp3 mp4 html certain files not supported yet"). Before this,
@@ -180,6 +182,13 @@ export interface VideoNodeData extends Record<string, unknown> {
   title?: string;
   thumbnailUrl?: string;
   authorName?: string;
+  /** Round 1 UX #9 — the thumbnail image's own real pixel dimensions, straight from
+   * the platform's oEmbed response (link-preview.ts). Undefined for a node fetched
+   * before this shipped, or if the platform ever omits them — video-node.tsx falls
+   * back to its old fixed-height box in that case, so this is additive, never
+   * required. */
+  thumbnailWidth?: number;
+  thumbnailHeight?: number;
   /** The oEmbed metadata fetch's own status — url-source only. Unrelated to
    * `extractionStatus` below, which tracks the separate transcript pipeline. */
   status?: "loading" | "ok" | "error";
@@ -248,6 +257,27 @@ export interface ChatNodeData extends Record<string, unknown> {
   cardHeight?: number;
 }
 
+// Phase 6 (F-17/TF-10, ADR-0101) — a Mindmap node is a plain snapshot of ONE
+// generation: `topic`/`tree` are set once at creation (chat.ts's /generate-mindmap)
+// and never edited in place. "Regenerate" (F-17's explicit requirement — it must
+// create a NEW node, never silently overwrite a previous one the user may have
+// already moved/kept) is just another addMindmapNode call, not a mutation of this
+// node's own data.
+export interface MindmapTreeNode extends Record<string, unknown> {
+  label: string;
+  children?: MindmapTreeNode[];
+}
+export interface MindmapNodeData extends Record<string, unknown> {
+  topic: string;
+  tree: MindmapTreeNode[];
+  /** Which chat node this was generated from — cosmetic only (shown as a small
+   * "from <node>" label, mindmap-node.tsx), never a real edge/connection, and not
+   * re-resolved if that source node is later deleted. */
+  sourceNodeId?: string;
+  cardWidth?: number;
+  cardHeight?: number;
+}
+
 interface ServerNode {
   id: string;
   board_id: string;
@@ -276,12 +306,20 @@ function toRfNode(n: ServerNode): Node {
     data,
     ...(width !== undefined ? { width } : {}),
     ...(height !== undefined ? { height } : {}),
-    // Grouping (Phase 3): mirrors React Flow's own parent/child mechanism directly —
-    // `parentId` + `extent: "parent"` is what makes React Flow move a group's members
-    // along with it and constrain them inside it natively, no hand-rolled drag logic
-    // needed here. Only set when there IS a parent — an explicit `undefined` key would
-    // still show up in the object via the spread below otherwise.
-    ...(n.parent_node_id ? { parentId: n.parent_node_id, extent: "parent" as const } : {}),
+    // Grouping (Phase 3): `parentId` alone is what makes React Flow move a group's
+    // members along with it and interpret their `position` as relative to it — no
+    // hand-rolled drag-follow logic needed here. Only set when there IS a parent — an
+    // explicit `undefined` key would still show up in the object via the spread below
+    // otherwise.
+    //
+    // Round 1 bug #2 — deliberately NOT pairing this with `extent: "parent"` (which
+    // used to clamp a member's own drag to stay inside its parent's rect): that clamp
+    // made it physically impossible to ever drag a member out of its group, which is
+    // exactly the gesture page.tsx's handleGroupMembershipAfterDrag now supports —
+    // dragging a member fully outside its group's frame releases it back onto the open
+    // canvas. `parentId` without `extent` still gets everything else (relative
+    // positioning, moving with the group) — `extent` was purely an extra clamp on top.
+    ...(n.parent_node_id ? { parentId: n.parent_node_id } : {}),
   };
 }
 
@@ -375,6 +413,31 @@ type HistoryEntry =
       members: { id: string; relativePosition: { x: number; y: number } }[];
       groupEdges: Edge[];
     }
+  // Round 1 bug #2 — one node joining/leaving an EXISTING group via a plain drag (see
+  // reparentNode's own doc comment on the BoardState interface). Forward = move to
+  // to*, backward = move back to from* — same single-pair-of-fields symmetry "move"
+  // above already uses, just with an optional parent alongside the position.
+  //
+  // BUG-034: joining a group must ALSO absorb the node's own external edges onto the
+  // group itself, same rule groupSelectedNodes already applies ("after grouping nodes
+  // should not be there only groups node should appear") — an edge left pointing
+  // directly at a node that's now nested inside a group frame is what broke React
+  // Flow's own edge rendering (repeating "Couldn't create edge for source handle"
+  // console errors) the first time this shipped without it. `removedNodeEdges`/
+  // `createdGroupEdges` are both empty for a LEAVE (toParentId null) — a member that
+  // exits a group starts fresh with no edges of its own, the same precedent
+  // ungroupNode already set for not trying to guess which absorbed edge belongs to
+  // which member.
+  | {
+      kind: "reparent";
+      nodeId: string;
+      fromParentId: string | null;
+      fromPosition: { x: number; y: number };
+      toParentId: string | null;
+      toPosition: { x: number; y: number };
+      removedNodeEdges: Edge[];
+      createdGroupEdges: Edge[];
+    }
   // Duplication (Phase 3, F-07/F-19) — one entry covers BOTH Ctrl+D's in-place duplicate
   // and an explicit paste: both are "a batch of brand-new nodes/edges came into
   // existence together," undoable as one step regardless of how many nodes were in the
@@ -439,6 +502,13 @@ interface BoardState {
   addChatNode: (position: { x: number; y: number }, provider: ChatNodeData["provider"]) => Promise<void>;
   /** Returns true if `url` was recognized as a YouTube/Vimeo link and a video node was created. */
   addVideoNodeFromUrl: (position: { x: number; y: number }, url: string) => Promise<boolean>;
+  /** Phase 6 (F-17/TF-10) — creates a new Mindmap node holding one generation's
+   * result, positioned just to the right of `sourceNodeId`'s own current position
+   * (with a small offset per existing mindmap already generated from that same
+   * source, so repeated "Regenerate" clicks fan out instead of stacking exactly on
+   * top of each other). `sourceNodeId` is cosmetic-only (see MindmapNodeData) — this
+   * never creates an edge. */
+  addMindmapNode: (sourceNodeId: string, topic: string, tree: MindmapTreeNode[]) => Promise<void>;
   /** Converts an existing `link` node in place once its URL field resolves to a video platform. */
   convertLinkNodeToVideo: (nodeId: string, url: string) => Promise<boolean>;
   /** Kicks off the lightweight title+favicon fetch for a `link` node's current URL
@@ -475,6 +545,21 @@ interface BoardState {
   /** Removes the group container, restoring each member to its absolute canvas position
    * (unchanged relative to each other) — not a delete of the members themselves. */
   ungroupNode: (groupId: string) => Promise<void>;
+  // Round 1 bug #2 — a plain drag that lands a node inside/outside a group's frame
+  // joins/leaves that group (page.tsx's handleNodeDragStop detects the intersection via
+  // React Flow's own getIntersectingNodes). Distinct from groupSelectedNodes/ungroupNode
+  // above: this moves ONE already-existing node between an existing group and the open
+  // canvas — it never creates or destroys a group's own row. `toParentId: null` means
+  // "release onto the open canvas." Positions are in whichever space applies to their
+  // own parentId (absolute when that side's parentId is null, relative-to-parent
+  // otherwise — React Flow's own convention, same as every other position in this file).
+  reparentNode: (
+    nodeId: string,
+    fromParentId: string | null,
+    fromPosition: { x: number; y: number },
+    toParentId: string | null,
+    toPosition: { x: number; y: number }
+  ) => Promise<void>;
   // Duplication (Phase 3, F-07/F-19). `nodeIds` are the SELECTED top-level ids — any id
   // that names a `group` node is automatically expanded to include its current members,
   // so passing just the group's own id is enough to duplicate/copy it whole; a selected
@@ -566,6 +651,21 @@ function doSaveData(boardId: string, nodeId: string, patch: { type?: string; dat
 }
 
 export const useBoardStore = create<BoardState>((set, get) => {
+  // Round 1 bug #5: a connected node's own Delete-key press removes the node AND its
+  // edge(s) as TWO separate change batches — React Flow's cascading delete (confirmed
+  // via @xyflow/react's deleteElements source) always dispatches the edge-removal
+  // change to onEdgesChange BEFORE the node-removal change reaches onNodesChange, each
+  // independently. Left alone, that means deleteEdge (below) logs its own
+  // "disconnectEdge" undo entry before deleteNode even runs, and deleteNode's own
+  // edge-scan comes back empty (the edge is already gone from state) — so one Delete
+  // keypress on a connected card produced TWO separate undo steps instead of one. This
+  // buffer lets deleteNode claim an edge that deleteEdge removed moments earlier in the
+  // same synchronous cascade, folding it into the node's own "delete" entry; anything
+  // left unclaimed (a real standalone edge delete) is flushed as its own entry on the
+  // next microtask, once this cascade's synchronous work is done. See deleteEdge/
+  // deleteNode below for the claim/flush logic itself.
+  let pendingDisconnects: Edge[] = [];
+
   function pushHistory(entry: HistoryEntry) {
     set((state) => ({
       past: [...state.past, entry].slice(-MAX_HISTORY),
@@ -669,12 +769,22 @@ export const useBoardStore = create<BoardState>((set, get) => {
   // there only groups node should appear") — an edge where exactly ONE endpoint is a
   // node about to join the group gets re-pointed onto the GROUP itself rather than
   // staying attached to the (now hidden-handle, per node-chrome.tsx's
-  // `hideConnections`) member buried inside it. An edge where BOTH endpoints are
-  // joining this same group is "internal" and is left exactly alone — the same F-07
-  // rule duplication already applies to its own copied selections. Returns the
-  // original edges to remove and the DEDUPED (source, target) pairs to create in their
-  // place, since two members both already wired to the same outside node must collapse
-  // onto one group<->that-node edge, not two overlapping ones.
+  // `hideConnections`) member buried inside it. Returns the original edges to remove
+  // and the DEDUPED (source, target) pairs to create in their place, since two members
+  // both already wired to the same outside node must collapse onto one
+  // group<->that-node edge, not two overlapping ones.
+  //
+  // BUG (Istiyak's console screenshot, flooding "Couldn't create edge for source
+  // handle id: null"): an edge where BOTH endpoints land in the same group — e.g. a
+  // standalone card gets dragged into a group that already contains the node it was
+  // connected to — used to be left "internal" and untouched, on the assumption it'd
+  // still render as a direct sibling-to-sibling edge. It can't: `hideConnections`
+  // (node-chrome.tsx) hides a member's handles unconditionally, for EITHER endpoint,
+  // not just when the other end is external — so a same-group edge is exactly as
+  // unrenderable as a single-member one, just permanently so instead of transiently
+  // (grouping two already-connected cards via Ctrl+G hits the identical gap). Now
+  // dropped outright rather than left dangling — consistent with "nodes should not be
+  // there, only the group's own connection should appear" once both ends are inside.
   function computeGroupEdgeAbsorption(
     groupId: string,
     memberIds: Set<string>,
@@ -686,7 +796,11 @@ export const useBoardStore = create<BoardState>((set, get) => {
     for (const edge of edges) {
       const sourceIsMember = memberIds.has(edge.source);
       const targetIsMember = memberIds.has(edge.target);
-      if (sourceIsMember === targetIsMember) continue; // both internal or neither — untouched
+      if (!sourceIsMember && !targetIsMember) continue; // neither — untouched
+      if (sourceIsMember && targetIsMember) {
+        toRemove.push(edge); // both now internal to the same group — can't render, drop it
+        continue;
+      }
       const source = sourceIsMember ? groupId : edge.source;
       const target = targetIsMember ? groupId : edge.target;
       toRemove.push(edge);
@@ -732,7 +846,9 @@ export const useBoardStore = create<BoardState>((set, get) => {
           .map((n) => {
             const member = members.find((m) => m.id === n.id);
             if (!member) return n;
-            return { ...n, position: member.relativePosition, parentId: groupNode.id, extent: "parent" as const };
+            // No `extent: "parent"` — see toRfNode's comment (Round 1 bug #2): that
+            // clamp used to make it physically impossible to drag a member back out.
+            return { ...n, position: member.relativePosition, parentId: groupNode.id };
           }),
       ],
     }));
@@ -784,6 +900,58 @@ export const useBoardStore = create<BoardState>((set, get) => {
           // Best-effort, same posture as every other mutation in this file.
         });
     }
+  }
+
+  // Round 1 bug #2 — reparentNodeLocal/reparentNodeRemote move a single EXISTING node
+  // to a new parent (or `null` to release it onto the open canvas), shared by the live
+  // drag-to-join/drag-to-leave gesture AND by undo/redo of a "reparent" entry.
+  // Deliberately NOT attachGroup/detachGroup above: those also create/destroy the
+  // GROUP's own row, which is right for "this group now exists"/"is dissolved" but
+  // wrong here — the group is already alive, before and after, on both sides of this.
+  function reparentNodeLocal(nodeId: string, parentId: string | null, position: { x: number; y: number }) {
+    set((s) => {
+      const existing = s.nodes.find((n) => n.id === nodeId);
+      if (!existing) return {};
+      const next: Node = { ...existing, position };
+      if (parentId) {
+        // No `extent: "parent"` here — see toRfNode's comment on why that clamp was
+        // dropped (it's what used to make dragging a member back out impossible).
+        next.parentId = parentId;
+        // BUG (live-tested, Istiyak: dragging a card into a group "visually... not
+        // becoming a part of that group"): confirmed against @xyflow/system's own
+        // compiled source — its node-adoption pass (adoptUserNodes/updateChildNode)
+        // walks `nodes` in a single forward pass and requires a parent to already be in
+        // its lookup when it reaches a child, else it just warns ("Parent node ... not
+        // found... make sure parent nodes are in front of their child nodes in the
+        // nodes array") and skips wiring that child up — our data model says it's
+        // parented, but React Flow never actually registers the relationship, so it
+        // doesn't render nested and doesn't move with the group. attachGroup above
+        // already respects this (it puts the group node first); a plain in-place
+        // `.map()` here left the node at its ORIGINAL array index, which breaks the
+        // rule whenever that index is before the group's — the normal case, since the
+        // node was created independently of whatever group it's now joining. Moving it
+        // to the end of the array guarantees it lands after its new parent, which (a
+        // group can't nest into another group) is always already present earlier on.
+        return { nodes: [...s.nodes.filter((n) => n.id !== nodeId), next] };
+      }
+      delete next.parentId;
+      delete next.extent;
+      return { nodes: s.nodes.map((n) => (n.id === nodeId ? next : n)) };
+    });
+  }
+
+  function reparentNodeRemote(nodeId: string, parentId: string | null, position: { x: number; y: number }) {
+    const { boardId } = get();
+    if (!boardId) return;
+    api
+      .patch(`/api/boards/${boardId}/nodes/${nodeId}`, {
+        position_x: position.x,
+        position_y: position.y,
+        parent_node_id: parentId,
+      })
+      .catch(() => {
+        // Best-effort, same posture as every other mutation in this file.
+      });
   }
 
   // --- Duplication / copy-paste (Phase 3, F-07/F-19) ----------------------------------
@@ -1013,6 +1181,17 @@ export const useBoardStore = create<BoardState>((set, get) => {
         }
         detachGroup(entry.groupNode, entry.members);
         break;
+      case "reparent":
+        reparentNodeLocal(entry.nodeId, entry.toParentId, entry.toPosition);
+        reparentNodeRemote(entry.nodeId, entry.toParentId, entry.toPosition);
+        for (const edge of entry.removedNodeEdges) {
+          removeEdgeLocal(edge.id);
+          deleteEdgeRemote(edge.id);
+        }
+        for (const edge of entry.createdGroupEdges) {
+          recreateEdgeRemote(edge);
+        }
+        break;
       case "duplicate":
         for (const node of [...entry.nodes.filter((n) => n.type === RF_GROUP_TYPE), ...entry.nodes.filter((n) => n.type !== RF_GROUP_TYPE)]) {
           recreateNodeRemote(node);
@@ -1031,7 +1210,18 @@ export const useBoardStore = create<BoardState>((set, get) => {
         deleteNodeRemote(entry.node.id);
         break;
       case "delete":
+        // BUG (Round 1 #5, Istiyak: "IF card node deleted and ctrl+z then it lost its
+        // wire connection with other node") — deleting a node correctly captures its
+        // connected edges into this very entry (removeNodeAndEdgesLocal, `delete`'s
+        // own `edges` field above), but undoing the delete only ever restored the
+        // NODE, never looped back over that captured list — so the card came back
+        // with no wires, every time. Same recreateEdgeRemote already used to restore
+        // edges on every other entry kind ("group"/"ungroup"/"reparent"'s own forward/
+        // backward cases just above/below).
         recreateNodeRemote(entry.node);
+        for (const edge of entry.edges) {
+          recreateEdgeRemote(edge);
+        }
         break;
       case "move":
         setNodePositionLocal(entry.nodeId, entry.from.x, entry.from.y);
@@ -1067,6 +1257,17 @@ export const useBoardStore = create<BoardState>((set, get) => {
           recreateEdgeRemote(edge);
         }
         break;
+      case "reparent":
+        reparentNodeLocal(entry.nodeId, entry.fromParentId, entry.fromPosition);
+        reparentNodeRemote(entry.nodeId, entry.fromParentId, entry.fromPosition);
+        for (const edge of entry.createdGroupEdges) {
+          removeEdgeLocal(edge.id);
+          deleteEdgeRemote(edge.id);
+        }
+        for (const edge of entry.removedNodeEdges) {
+          recreateEdgeRemote(edge);
+        }
+        break;
       case "duplicate":
         // Undoing a duplicate/paste removes the WHOLE batch it created outright — unlike
         // `deleteNode`'s group-aware special case, there's no pre-existing content to
@@ -1098,6 +1299,8 @@ export const useBoardStore = create<BoardState>((set, get) => {
         title?: string;
         thumbnailUrl?: string;
         authorName?: string;
+        thumbnailWidth?: number;
+        thumbnailHeight?: number;
       }>(`/api/link-preview?url=${encodeURIComponent(url)}`)
       .then((result) => {
         const current = get().nodes.find((n) => n.id === nodeId);
@@ -1110,6 +1313,8 @@ export const useBoardStore = create<BoardState>((set, get) => {
                 title: result.title ?? "",
                 thumbnailUrl: result.thumbnailUrl ?? "",
                 authorName: result.authorName ?? "",
+                thumbnailWidth: result.thumbnailWidth,
+                thumbnailHeight: result.thumbnailHeight,
                 status: "ok",
               }
             : { ...existing, status: "error" };
@@ -1310,6 +1515,23 @@ export const useBoardStore = create<BoardState>((set, get) => {
           edges: serverEdges.map(toRfEdge),
           loaded: true,
         });
+
+        // Self-heal (Istiyak's console screenshot: "Couldn't create edge for source
+        // handle id: null" flooding on every render) — an edge that directly touches a
+        // member node on either end can never render (node-chrome.tsx hides a member's
+        // handles unconditionally). computeGroupEdgeAbsorption now stops new edges like
+        // this from being created, but that doesn't retroactively clear one already
+        // stuck in a board from before this fix — and a member's own handle never
+        // draws, so there's no way to select and delete that edge from the UI itself.
+        // Runs on every load, not just once, so it also catches any other path that
+        // might someday produce the same invariant violation.
+        const { nodes: loadedNodes, edges: loadedEdges } = get();
+        const memberIds = new Set(loadedNodes.filter((n) => n.parentId).map((n) => n.id));
+        const danglingEdges = loadedEdges.filter((e) => memberIds.has(e.source) || memberIds.has(e.target));
+        if (danglingEdges.length > 0) {
+          set((s) => ({ edges: s.edges.filter((e) => !danglingEdges.some((d) => d.id === e.id)) }));
+          for (const edge of danglingEdges) deleteEdgeRemote(edge.id);
+        }
       } catch {
         set({ loadError: "Can't reach the Brainy.ai backend. Check that the server is running.", loaded: true });
       }
@@ -1396,7 +1618,22 @@ export const useBoardStore = create<BoardState>((set, get) => {
       const edge = removeEdgeLocal(edgeId);
       if (!edge) return; // already removed (e.g. duplicate remove change in the same batch)
       deleteEdgeRemote(edgeId);
-      pushHistory({ kind: "disconnectEdge", edge });
+      // Round 1 bug #5 — see pendingDisconnects' own comment up top for the full why.
+      // Buffer instead of logging immediately: deleteNode runs synchronously right
+      // after in the same delete cascade and will claim this edge into its own
+      // "delete" entry if it touches the node being deleted. Only flush as a
+      // standalone "disconnectEdge" entry on the next microtask, once nothing more
+      // from this cascade is left to claim it (a genuine standalone edge delete).
+      pendingDisconnects.push(edge);
+      if (pendingDisconnects.length === 1) {
+        queueMicrotask(() => {
+          const unclaimed = pendingDisconnects;
+          pendingDisconnects = [];
+          for (const e of unclaimed) {
+            pushHistory({ kind: "disconnectEdge", edge: e });
+          }
+        });
+      }
     },
 
     addTextNode: async (position, content) => {
@@ -1460,8 +1697,8 @@ export const useBoardStore = create<BoardState>((set, get) => {
       if (!boardId) return;
       const DEFAULT_MODEL: Record<ChatNodeData["provider"], string> = {
         claude: "claude-sonnet-5-5",
-        openai: "gpt-5",
-        gemini: "gemini-3-pro",
+        openai: "gpt-5.6-terra",
+        gemini: "gemini-3.6-flash",
       };
       // Execution mode has two homes by design (ADR-0019/F-12): Settings'
       // provider_credentials.execution_mode is the DEFAULT a newly placed node of
@@ -1690,6 +1927,36 @@ export const useBoardStore = create<BoardState>((set, get) => {
       return true;
     },
 
+    addMindmapNode: async (sourceNodeId, topic, tree) => {
+      const { boardId, nodes } = get();
+      if (!boardId) return;
+      const source = nodes.find((n) => n.id === sourceNodeId);
+      // Falls back to the canvas origin if the source node has somehow vanished by
+      // the time this resolves (e.g. deleted mid-generation) — still creates the
+      // node rather than silently dropping a completed generation.
+      const basePosition = source?.position ?? { x: 0, y: 0 };
+      // Fans repeated generations from the SAME source out diagonally rather than
+      // stacking them exactly on top of each other (F-17: "Regenerate... creates a
+      // new node").
+      const priorFromSameSource = nodes.filter(
+        (n) => n.type === "mindmap" && (n.data as MindmapNodeData).sourceNodeId === sourceNodeId
+      ).length;
+      const position = {
+        x: basePosition.x + 320 + priorFromSameSource * 40,
+        y: basePosition.y + priorFromSameSource * 40,
+      };
+      const data: MindmapNodeData = { topic, tree, sourceNodeId };
+      const { node } = await api.post<{ node: ServerNode }>(`/api/boards/${boardId}/nodes`, {
+        type: "mindmap",
+        position_x: position.x,
+        position_y: position.y,
+        data,
+      });
+      const rfNode = toRfNode(node);
+      set((state) => ({ nodes: [...state.nodes, rfNode] }));
+      pushHistory({ kind: "create", node: rfNode });
+    },
+
     convertLinkNodeToVideo: async (nodeId, url) => {
       const match = parseVideoUrl(url);
       if (!match) return false;
@@ -1778,6 +2045,49 @@ export const useBoardStore = create<BoardState>((set, get) => {
       pushHistory({ kind: "resize", nodeId, from, to: size });
     },
 
+    reparentNode: async (nodeId, fromParentId, fromPosition, toParentId, toPosition) => {
+      reparentNodeLocal(nodeId, toParentId, toPosition);
+      reparentNodeRemote(nodeId, toParentId, toPosition);
+
+      // BUG-034 — see the "reparent" HistoryEntry doc comment above for why this only
+      // runs on a JOIN (toParentId set), never a leave.
+      let removedNodeEdges: Edge[] = [];
+      const createdGroupEdges: Edge[] = [];
+      if (toParentId) {
+        const { boardId, nodes, edges } = get();
+        // Includes the group's EXISTING members alongside the node that's newly
+        // joining — otherwise an edge to a node that's already inside this same group
+        // would be misread as "external" and absorbed into a redundant group-to-group
+        // edge instead of being left alone as already-internal.
+        const existingMemberIds = nodes.filter((n) => n.parentId === toParentId).map((n) => n.id);
+        const memberIds = new Set([nodeId, ...existingMemberIds]);
+        const { toRemove, toCreatePairs } = computeGroupEdgeAbsorption(toParentId, memberIds, edges);
+        removedNodeEdges = toRemove;
+        for (const edge of toRemove) {
+          removeEdgeLocal(edge.id);
+          deleteEdgeRemote(edge.id);
+        }
+        if (boardId) {
+          for (const pair of toCreatePairs) {
+            try {
+              const { edge: created } = await api.post<{ edge: ServerEdge }>(`/api/boards/${boardId}/edges`, {
+                id: crypto.randomUUID(),
+                source_node_id: pair.source,
+                target_node_id: pair.target,
+              });
+              const rfEdge = toRfEdge(created);
+              set((s) => ({ edges: [...s.edges, rfEdge] }));
+              createdGroupEdges.push(rfEdge);
+            } catch {
+              // Best-effort, same posture as every other mutation in this file.
+            }
+          }
+        }
+      }
+
+      pushHistory({ kind: "reparent", nodeId, fromParentId, fromPosition, toParentId, toPosition, removedNodeEdges, createdGroupEdges });
+    },
+
     // Grouping (Phase 3): deleting a GROUP node (Delete key, hover "X", 3-dot menu —
     // every path funnels through this one function) must NOT take this branch — a plain
     // removeNodeAndEdgesLocal would leave its members' local `parentId` pointing at a
@@ -1795,7 +2105,22 @@ export const useBoardStore = create<BoardState>((set, get) => {
       const { node, edges: removedEdges } = removeNodeAndEdgesLocal(nodeId);
       if (!node) return; // already removed (e.g. duplicate remove change in the same batch)
       deleteNodeRemote(nodeId);
-      pushHistory({ kind: "delete", node, edges: removedEdges });
+      // Round 1 bug #5 — see pendingDisconnects' own comment up top. When this node's
+      // edge was removed moments earlier in the same cascade (via deleteEdge, called
+      // from onEdgesChange before onNodesChange ever reaches this), it's sitting in the
+      // buffer rather than in `removedEdges` (removeNodeAndEdgesLocal's own edges scan
+      // above always comes back empty in that case — the edge is already gone from
+      // state). Claim it here so it rides along in THIS node's own "delete" entry —
+      // one undo restores the card and its connection together.
+      let entryEdges = removedEdges;
+      if (pendingDisconnects.length > 0) {
+        const claimed = pendingDisconnects.filter((e) => e.source === nodeId || e.target === nodeId);
+        if (claimed.length > 0) {
+          pendingDisconnects = pendingDisconnects.filter((e) => e.source !== nodeId && e.target !== nodeId);
+          entryEdges = [...removedEdges, ...claimed];
+        }
+      }
+      pushHistory({ kind: "delete", node, edges: entryEdges });
     },
 
     // Grouping (Phase 3). See the `groupSelectedNodes`/`ungroupNode` doc comments on the

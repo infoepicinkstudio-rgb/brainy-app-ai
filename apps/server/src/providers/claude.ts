@@ -132,6 +132,7 @@ async function* streamChat(input: ChatInput): AsyncGenerator<ChatChunk> {
         messages: buildMessages(input),
         ...(input.webSearchEnabled ? { tools: [WEB_SEARCH_TOOL] } : {}),
       }),
+      signal: input.signal,
     });
   } catch {
     yield { type: "error", message: "Couldn't reach Claude — check your internet connection and try again." };

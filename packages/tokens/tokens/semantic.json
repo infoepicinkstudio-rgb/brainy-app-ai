@@ -11,7 +11,7 @@
       "dangerMuted": { "$value": "{color.danger.50}", "$type": "color" },
       "infoMuted": { "$value": "{color.info.50}", "$type": "color" },
       "successMuted": { "$value": "{color.success.50}", "$type": "color" },
-      "canvas":    { "$value": "{color.accent.50}", "$type": "color" },
+      "canvas":    { "$value": "{color.accent.25}", "$type": "color" },
       "canvasDot": { "$value": "{color.gray.400}", "$type": "color" }
     },
     "text": {

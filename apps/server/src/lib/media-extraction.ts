@@ -111,8 +111,59 @@ function releaseExtractionSlot(): void {
   if (next) next();
 }
 
-function run(command: string, args: string[]): Promise<void> {
+// BUG-033 — deleting a node mid-extraction used to leave its pipeline running (and its
+// concurrency slot held, see ADR-0092) for a node that no longer exists: DELETE
+// .../nodes/:nodeId had zero awareness of acquireExtractionSlot/extractionWaitQueue or
+// any in-flight extractMediaForNode call for that node. A batch-pasted-then-deleted set
+// of videos could permanently starve every genuinely new extraction behind it — exactly
+// what it looks like when a short video "should take seconds" but sits pending for many
+// minutes right after deleting other nodes.
+//
+// Fix: every in-flight or queued extraction registers itself here, keyed by node id, so
+// `cancelExtractionForNode` (called from the DELETE route) can mark it cancelled and —
+// if a subprocess (yt-dlp/ffmpeg) is currently running for it — kill that process
+// immediately. A still-QUEUED extraction (never reached acquireExtractionSlot yet, or
+// resolved it but hasn't spawned anything) is skipped entirely the moment it would
+// start, releasing its slot in ~0ms instead of running a pointless full pipeline.
+//
+// Known remaining gap, not solved here: @fugood/whisper.node's transcribeFile() is an
+// in-process native addon with no kill hook (same limitation ADR-0092's own comment
+// already flagged) — a node deleted during the whisper step itself still waits that one
+// step out before its slot frees. Every other stage (download, normalize, and a node
+// deleted before transcription ever starts) is now cancelled immediately.
+class ExtractionCancelledError extends Error {
+  constructor() {
+    super("Extraction cancelled — node was deleted.");
+    this.name = "ExtractionCancelledError";
+  }
+}
+
+interface ActiveExtraction {
+  cancelled: boolean;
+  killCurrentProcess: (() => void) | null;
+}
+
+const activeExtractionsByNode = new Map<string, ActiveExtraction>();
+
+/** Called from the node DELETE route. No-op if this node has no in-flight/queued
+ * extraction right now (the common case) — safe to call unconditionally on every delete. */
+export function cancelExtractionForNode(nodeId: string): void {
+  const entry = activeExtractionsByNode.get(nodeId);
+  if (!entry) return;
+  entry.cancelled = true;
+  entry.killCurrentProcess?.();
+}
+
+// `entry`, when passed, registers this subprocess as killable (BUG-033) for the
+// duration of the call and clears that registration again once it settles — so
+// `cancelExtractionForNode` can only ever kill the process that's actually running
+// right now, never a stale handle from a previous stage.
+function run(command: string, args: string[], entry?: ActiveExtraction): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (entry?.cancelled) {
+      reject(new ExtractionCancelledError());
+      return;
+    }
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(command, args, { windowsHide: true });
@@ -120,6 +171,7 @@ function run(command: string, args: string[]): Promise<void> {
       reject(err);
       return;
     }
+    if (entry) entry.killCurrentProcess = () => child.kill();
     const timer = setTimeout(() => {
       child.kill();
       reject(new Error(`${command} timed out after ${PIPELINE_STEP_TIMEOUT_MS / 1000}s`));
@@ -130,6 +182,7 @@ function run(command: string, args: string[]): Promise<void> {
     });
     child.on("error", (err) => {
       clearTimeout(timer);
+      if (entry) entry.killCurrentProcess = null;
       // ENOENT here means the binary isn't on PATH — implementation_plan.md Phase 5
       // step 0's own install checklist, surfaced as a real error rather than a silent
       // hang the first time Istiyak hits this before installing yt-dlp.exe/ffmpeg.exe.
@@ -137,15 +190,21 @@ function run(command: string, args: string[]): Promise<void> {
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      if (code === 0) resolve();
-      else reject(new Error(`${command} exited with code ${code}: ${stderr.slice(-2000)}`));
+      if (entry) entry.killCurrentProcess = null;
+      if (entry?.cancelled) {
+        reject(new ExtractionCancelledError());
+      } else if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${command} exited with code ${code}: ${stderr.slice(-2000)}`));
+      }
     });
   });
 }
 
 type MediaSource = { kind: "url"; url: string } | { kind: "upload"; absPath: string };
 
-async function downloadAudioFromUrl(url: string, workDir: string): Promise<string> {
+async function downloadAudioFromUrl(url: string, workDir: string, entry: ActiveExtraction): Promise<string> {
   // yt-dlp pulls whatever audio track is actually available, in whatever container it
   // arrives in (m4a/webm/...) — no format conversion here, that's ffmpeg's explicit job
   // next. Kept as two real subprocess calls (implementation_plan.md Phase 5's own
@@ -153,24 +212,30 @@ async function downloadAudioFromUrl(url: string, workDir: string): Promise<strin
   // separate items) rather than leaning on yt-dlp's own `--audio-format` postprocessor,
   // for full control over the exact flags whisper needs.
   const outputTemplate = path.join(workDir, "source.%(ext)s");
-  await run(YTDLP_PATH, ["-f", "bestaudio/best", "--no-playlist", "-o", outputTemplate, url]);
+  await run(YTDLP_PATH, ["-f", "bestaudio/best", "--no-playlist", "-o", outputTemplate, url], entry);
   const files = await readdir(workDir);
   const downloaded = files.find((f) => f.startsWith("source."));
   if (!downloaded) throw new Error("yt-dlp reported success but produced no output file");
   return path.join(workDir, downloaded);
 }
 
-async function normalizeToWav(inputPath: string, workDir: string): Promise<string> {
+async function normalizeToWav(inputPath: string, workDir: string, entry: ActiveExtraction): Promise<string> {
   const outputPath = path.join(workDir, "normalized.wav");
   // 16kHz mono PCM — the exact format @fugood/whisper.node's `transcribeFile` expects.
   // ffmpeg pulls the audio track directly out of a video container too, so this one
   // call handles an uploaded video file (ADR-0086) exactly the same way it handles
   // yt-dlp's audio-only download or an uploaded audio file (ADR-0085).
-  await run(FFMPEG_PATH, ["-y", "-i", inputPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", outputPath]);
+  await run(FFMPEG_PATH, ["-y", "-i", inputPath, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", outputPath], entry);
   return outputPath;
 }
 
-async function transcribe(wavPath: string): Promise<string> {
+async function transcribe(wavPath: string, entry: ActiveExtraction): Promise<string> {
+  // BUG-033 — whisper.node has no kill hook (see this file's top-of-section comment on
+  // activeExtractionsByNode), so this is a best-effort check: if the node was deleted
+  // during an earlier stage, don't even start transcription. A cancellation that lands
+  // WHILE this call is running still isn't interruptible — documented limitation, not
+  // fixed here.
+  if (entry.cancelled) throw new ExtractionCancelledError();
   // Lazy import — @fugood/whisper.node loads a native addon at import time; importing
   // it only when actually transcribing keeps a not-yet-`npm install`ed dependency from
   // crashing the whole server at boot (this pipeline is new and optional until Istiyak
@@ -193,12 +258,12 @@ async function transcribe(wavPath: string): Promise<string> {
   }
 }
 
-async function runPipeline(source: MediaSource): Promise<string> {
+async function runPipeline(source: MediaSource, entry: ActiveExtraction): Promise<string> {
   const workDir = await mkdtemp(path.join(tmpdir(), "brainy-extract-"));
   try {
-    const rawAudioPath = source.kind === "url" ? await downloadAudioFromUrl(source.url, workDir) : source.absPath;
-    const wavPath = await normalizeToWav(rawAudioPath, workDir);
-    return await transcribe(wavPath);
+    const rawAudioPath = source.kind === "url" ? await downloadAudioFromUrl(source.url, workDir, entry) : source.absPath;
+    const wavPath = await normalizeToWav(rawAudioPath, workDir, entry);
+    return await transcribe(wavPath, entry);
   } finally {
     await rm(workDir, { recursive: true, force: true });
   }
@@ -337,42 +402,68 @@ export async function extractMediaForNode(
   // distinction wasn't worth the extra state everywhere this type is threaded through.
   await patchNodeExtractionState(node, "pending", null);
 
-  // ADR-0092 — waits for a free slot if MAX_CONCURRENT_EXTRACTIONS pipelines are
-  // already running; resolves immediately otherwise.
-  await acquireExtractionSlot();
+  // BUG-033 — registered for the full lifetime of this call (queued AND running) so
+  // `cancelExtractionForNode` can reach it from the DELETE route either way. Always
+  // cleaned up in the outer `finally` below, regardless of how this function exits.
+  const entry: ActiveExtraction = { cancelled: false, killCurrentProcess: null };
+  activeExtractionsByNode.set(node.id, entry);
+
   try {
-    let extracted: string;
+    // ADR-0092 — waits for a free slot if MAX_CONCURRENT_EXTRACTIONS pipelines are
+    // already running; resolves immediately otherwise.
+    await acquireExtractionSlot();
     try {
-      extracted = truncate((await runPipeline(source)).trim());
-      if (!extracted) throw new Error("Pipeline produced an empty transcript");
-    } catch (mediaErr) {
-      // ADR-0094 — a `link` node gets one more chance before giving up: most link URLs
-      // are ordinary web pages, not something yt-dlp can pull any media from, so a
-      // media-pipeline failure here doesn't mean "nothing extractable" the way it does
-      // for a dedicated video/audio node. Fall back to scraping the page's own readable
-      // article text instead. `source.kind` is always `"url"` for a link node
-      // (mediaSourceFor never returns an upload source for that type), so this cast is
-      // safe. Video/audio nodes get no such fallback — a failed media pipeline for
-      // those really does mean failure, same as before this ADR.
-      if (node.type !== "link" || source.kind !== "url") throw mediaErr;
-      extracted = truncate((await extractArticleText(source.url)).trim());
-      if (!extracted) throw new Error("No readable article content found either");
+      // BUG-033 — the node may have been deleted while this was waiting in the queue
+      // (acquireExtractionSlot can take a while under ADR-0092's bound). Skip the
+      // pipeline entirely rather than running it for nothing — releases this slot in
+      // ~0ms instead of after a full, pointless yt-dlp/ffmpeg/whisper run.
+      if (entry.cancelled) {
+        return { status: "failed", content: null, preview: null, cached: false };
+      }
+      let extracted: string;
+      try {
+        extracted = truncate((await runPipeline(source, entry)).trim());
+        if (!extracted) throw new Error("Pipeline produced an empty transcript");
+      } catch (mediaErr) {
+        // ADR-0094 — a `link` node gets one more chance before giving up: most link
+        // URLs are ordinary web pages, not something yt-dlp can pull any media from, so
+        // a media-pipeline failure here doesn't mean "nothing extractable" the way it
+        // does for a dedicated video/audio node. Fall back to scraping the page's own
+        // readable article text instead. `source.kind` is always `"url"` for a link
+        // node (mediaSourceFor never returns an upload source for that type), so this
+        // cast is safe. Video/audio nodes get no such fallback — a failed media
+        // pipeline for those really does mean failure, same as before this ADR. A
+        // cancellation (node deleted) is never worth falling back from — there's
+        // nothing left to extract FOR.
+        if (mediaErr instanceof ExtractionCancelledError) throw mediaErr;
+        if (node.type !== "link" || source.kind !== "url") throw mediaErr;
+        extracted = truncate((await extractArticleText(source.url)).trim());
+        if (!extracted) throw new Error("No readable article content found either");
+      }
+      // Re-extract: clear any existing row for this source first rather than leaving a
+      // stale duplicate — source_key is UNIQUE, so this keeps one row per source either way.
+      if (options.force) {
+        await db.delete(extraction_cache).where(eq(extraction_cache.source_key, sourceKey));
+      }
+      await db.insert(extraction_cache).values({ source_key: sourceKey, extracted_content: extracted });
+      await patchNodeExtractionState(node, "ok", extracted);
+      return { status: "ok", content: extracted, preview: extracted.slice(0, 400), cached: false };
+    } catch (err) {
+      if (err instanceof ExtractionCancelledError) {
+        // Not a real failure — the node is gone, so there's no card left to show
+        // "failed" on anyway. A quieter log line than a genuine pipeline error.
+        console.log(`[media-extraction] cancelled for source "${sourceKey}" — node was deleted`);
+        return { status: "failed", content: null, preview: null, cached: false };
+      }
+      // The real error goes to the server log only — never a raw stack trace to the UI
+      // (error-handling-conventions.md).
+      console.error(`[media-extraction] failed for source "${sourceKey}":`, err);
+      await patchNodeExtractionState(node, "failed", null);
+      return { status: "failed", content: null, preview: null, cached: false };
+    } finally {
+      releaseExtractionSlot();
     }
-    // Re-extract: clear any existing row for this source first rather than leaving a
-    // stale duplicate — source_key is UNIQUE, so this keeps one row per source either way.
-    if (options.force) {
-      await db.delete(extraction_cache).where(eq(extraction_cache.source_key, sourceKey));
-    }
-    await db.insert(extraction_cache).values({ source_key: sourceKey, extracted_content: extracted });
-    await patchNodeExtractionState(node, "ok", extracted);
-    return { status: "ok", content: extracted, preview: extracted.slice(0, 400), cached: false };
-  } catch (err) {
-    // The real error goes to the server log only — never a raw stack trace to the UI
-    // (error-handling-conventions.md).
-    console.error(`[media-extraction] failed for source "${sourceKey}":`, err);
-    await patchNodeExtractionState(node, "failed", null);
-    return { status: "failed", content: null, preview: null, cached: false };
   } finally {
-    releaseExtractionSlot();
+    activeExtractionsByNode.delete(node.id);
   }
 }

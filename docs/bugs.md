@@ -122,6 +122,16 @@ Check that "llama3.2-vision:latest" is actually pulled (ollama list).
 **Root cause:** Classic stale-read-then-blind-write race. `addLinkNode` fires `refreshLinkMetadata` (the title/favicon fetch) and `triggerExtraction` (ADR-0091's eager extraction) within the same instant on card creation. The `/extract` route reads the node from the DB once and hands it to `extractMediaForNode`, which holds that snapshot for the pipeline's whole duration. `patchNodeExtractionState` then wrote its `extractionStatus`/`extractionPreview` update by spreading that ORIGINAL snapshot (`{...node.data, extractionStatus, ...}`) — if the title/favicon fetch's own save landed on the DB row AFTER the extraction route's initial read but BEFORE `patchNodeExtractionState`'s final write (very likely once ADR-0094 made link extraction fast, seconds rather than minutes), that final write silently reverted the row back to its pre-title state, title and all. The next `refreshNodesData`/poll then pulled that titleless row back into the client.
 **Fix:** See ADR-0096 for the full decision — `patchNodeExtractionState` now re-reads the node's CURRENT `data` from the DB immediately before merging/writing, instead of trusting the snapshot it was called with. Closes the race for every node type and every concurrently-edited field, not just a link's title.
 
+### BUG-035 — Round 2 keyboard shortcuts don't fire when tested on Istiyak's machine
+**Date:** 2026-10-29
+**Status:** Open — explicitly parked by Istiyak ("Shortcuts not working. But we should move to next and park this as bug for later"), not yet diagnosed
+**Feature/Task Flow:** Round 2 #2 (ADR-0104 — keyboard shortcuts visibility pass)
+**Symptom:** Istiyak reported "Shortcuts not working" with no further detail — which specific combo(s) he tried, in which browser, or whether this is the newly-added Ctrl+N (New board) specifically or also the pre-existing canvas ones (Ctrl+D/Ctrl+Shift+G etc., unchanged this round — only their on-card BADGES are new) is not yet known. Logged as-is rather than guessed at, per this file's own "diagnosis first" rule — do not assume a root cause below is confirmed.
+**Console/error output:** Not yet captured.
+**Files involved (candidates, not confirmed):** `apps/web/app/brainboards/(list)/all/page.tsx` (new `Ctrl+N` keydown handler this round — the only genuinely NEW key binding added in Round 2); `apps/web/app/brainboards/[id]/page.tsx` (pre-existing canvas `handleKeyDown` — Ctrl+D/Ctrl+Shift+G etc. — unchanged this round, only worth re-checking if those are ALSO affected, not just Ctrl+N).
+**Root cause:** Not yet diagnosed. One known, already-flagged risk specific to Ctrl+N: Chrome/Firefox/Edge reserve Ctrl+N as a browser-level "open new window" shortcut that page-level `event.preventDefault()` cannot reliably block — this was called out to Istiyak *before* shipping (he was offered Ctrl+Shift+N as a collision-free alternative and chose Ctrl+N anyway), so it's the leading suspect for that one specific binding, but is NOT confirmed as the actual cause, and doesn't explain anything beyond Ctrl+N if the pre-existing canvas shortcuts are also affected.
+**Fix:** Not yet attempted. Next session should start by asking Istiyak exactly which shortcut(s) he tried and in which browser/page, before touching any code — if it's Ctrl+N specifically, the one-line fix is switching the binding to Ctrl+Shift+N; if pre-existing canvas shortcuts are also silent, that's a different, newer regression needing its own investigation.
+
 ## Resolved
 
 ### BUG-008 — Pressing Backspace while a node was merely selected (not focused in its own input) permanently deleted it, with no undo
@@ -409,3 +419,23 @@ SyntaxError: Unexpected end of JSON input
 **Files involved:** `apps/web/lib/api.ts`
 **Root cause:** Every hard-DELETE route in this API correctly returns `204 No Content` on success — an empty body, by design. The shared `request()` wrapper unconditionally called `response.json()` on every successful response, which throws on an empty body. The caller's follow-up code (closing the dialog, removing the board from local state) never ran because the exception happened first.
 **Fix:** Added a short-circuit in `apps/web/lib/api.ts`'s `request()`: `if (response.status === 204) return undefined as T;` before the generic `.json()` call. Verified via the full Playwright regression — the dialog now closes and the board disappears immediately after a successful permanent delete.
+
+### BUG-033 — New connector handle dots' accent border color did not reliably render — dots looked flat/invisible on Istiyak's actual machine despite being structurally present
+**Date:** 2026-10-29
+**Status:** Resolved (confirmed working by Istiyak)
+**Feature/Task Flow:** TF-06 (drag-to-connect) × ADR-0102 (connector/handle visual redesign)
+**Symptom:** Istiyak, reference screenshots: "Reached to certain stage but still not completely adapted." After enlarging and repositioning the `<Handle>` dots to sit outside each card's edge, the dots on his actual running app still looked pale/colorless rather than filled in each card type's own accent color, even though the same `--color-ribbon-solid-<accent>` CSS variable already rendered correctly everywhere else on the card (header tint, selection ring).
+**Console/error output:** N/A — a silent CSS-generation issue, not a thrown error.
+**Files involved:** `apps/web/components/canvas/node-chrome.tsx`, `group-node.tsx`.
+**Root cause:** The dot's border color was first set via a brand-new Tailwind utility family, `border-ribbon-solid-<accent>`, read against the same token group every other (already-proven) `bg-*`/`ring-*`/`text-*` ribbon utility uses — but no `border-*` variant of that token group had ever been exercised anywhere in this codebase before, and whether Tailwind's JIT generator was actually emitting it could not be directly confirmed in this sandbox (no way to render/inspect the live app here). Given the dots were visibly washed out on the one machine that could render them, the untested class family was the most likely point of failure.
+**Fix:** Replaced the Tailwind-class dependency for the dot's border color entirely with an inline `style.borderColor`, via a new exported helper `ribbonSolidVar(accent)` that returns the raw `var(--color-ribbon-solid-<accent>)` string directly — removing any dependency on Tailwind generating a utility class for a token group it had never been asked to generate one for before.
+
+### BUG-034 — Connector handle dots painted behind the card instead of sitting cleanly outside its edge
+**Date:** 2026-10-29
+**Status:** Resolved (confirmed working by Istiyak)
+**Feature/Task Flow:** TF-06 (drag-to-connect) × ADR-0102
+**Symptom:** Istiyak, reference screenshot: "Dot nodes very much connected to cards and behind the card." Even once the dots were correctly sized and colored, they still read as sitting underneath/clipped by the card rather than floating cleanly outside its edge the way the reference screenshot did.
+**Console/error output:** N/A — a stacking-order rendering issue, not a thrown error.
+**Files involved:** `apps/web/components/canvas/node-chrome.tsx`, `group-node.tsx`.
+**Root cause:** Both `<Handle>` elements were rendered as the FIRST children inside `NodeChrome`'s (and `group-node`'s) wrapper — before the header/body divs — with no explicit `z-index`. Later-painted DOM siblings (this same card's own header/body, or a neighboring card) could then paint over them at the browser's default stacking order, making a dot look like it sat behind the card rather than on top of its edge. `group-node.tsx` had already picked up this exact fix once before, for an earlier, unrelated bug ("still group is not able connect to other nodes") — this was the same class of problem recurring on the per-type node chrome.
+**Fix:** Added `!z-20` to both Handles in `node-chrome.tsx` (mirroring `group-node.tsx`'s existing fix), guaranteeing a dot paints above its own card's content and any neighboring card at the default stacking context.

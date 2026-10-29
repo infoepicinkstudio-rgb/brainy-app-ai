@@ -73,6 +73,21 @@ function VideoNodeImpl({ id, data, selected, parentId }: NodeProps) {
   const explicitHeight = typedData.cardHeight;
   const fileUrl = isUpload ? `${API_BASE_URL}/api/files/${typedData.storedName}` : "";
 
+  // Round 1 UX #9 (Istiyak: "Video preview thumbnails should match source aspect ratio
+  // — 16:9 YouTube, 9:16 Shorts/Reels"). The thumbnail box used to be a flat h-32
+  // regardless of the source's real shape, so a vertical Short got squeezed/cropped
+  // into the same wide box as a normal video. thumbnailWidth/thumbnailHeight (new,
+  // board-store.ts) come straight from the platform's own oEmbed response — a Short's
+  // thumbnail reports taller-than-wide, a normal video wider-than-tall — so the box
+  // itself is now shaped to match. Sanity-clamped to plausible video shapes (9:16
+  // through ultra-wide 21:9, with a little margin either side) so corrupt/missing data
+  // falls back to the old fixed h-32 below rather than producing a wild, broken box.
+  const thumbAspectRatio =
+    typedData.thumbnailWidth && typedData.thumbnailHeight && typedData.thumbnailHeight > 0
+      ? typedData.thumbnailWidth / typedData.thumbnailHeight
+      : null;
+  const hasReliableAspectRatio = thumbAspectRatio !== null && thumbAspectRatio >= 0.4 && thumbAspectRatio <= 2.5;
+
   return (
     <NodeChrome
       id={id}
@@ -132,9 +147,13 @@ function VideoNodeImpl({ id, data, selected, parentId }: NodeProps) {
             // but the thumbnail itself never did, which read as "resize doesn't touch
             // the thumbnail." `flex-1 min-h-0` makes it the one element in the body
             // that actually absorbs any extra resized height (the notes field below
-            // keeps its own fixed collapsed/expanded height either way).
-            explicitHeight ? "min-h-0 flex-1" : "h-32 shrink-0"
+            // keeps its own fixed collapsed/expanded height either way). A manually
+            // resized card (legacy data only — new video nodes can't be height-resized,
+            // see ADR-0075) keeps that fill-and-crop behavior regardless of aspect
+            // ratio, since the user already chose that exact box size on purpose.
+            explicitHeight ? "min-h-0 flex-1" : hasReliableAspectRatio ? "w-full shrink-0" : "h-32 shrink-0"
           )}
+          style={!explicitHeight && hasReliableAspectRatio ? { aspectRatio: thumbAspectRatio } : undefined}
         >
           {typedData.status === "ok" && typedData.thumbnailUrl ? (
             <>

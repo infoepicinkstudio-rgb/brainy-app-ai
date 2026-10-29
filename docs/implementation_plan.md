@@ -537,26 +537,88 @@ explicitly deferred tuning this to a later pass, not a blocker for now.
 3. **Outliers panel and Mindmap node** last — both are additive UI features with no dependency on the provider work above, so order between them doesn't matter; pick whichever has clearer requirements at the time.
 
 **Build checklist:**
-- [ ] OpenAI `ProviderAdapter` implementation, enabled end-to-end
-- [ ] Gemini `ProviderAdapter` implementation, enabled end-to-end
-- [ ] Local LLM (Ollama) adapter path implemented for at least one provider's node
-- [ ] Manual Input mode: copy/paste bridge UI (assembled prompt shown for copy, pasted response accepted back in)
+- [x] OpenAI `ProviderAdapter` implementation, enabled end-to-end — real `/v1/chat/completions` SSE streaming, `tsc --noEmit` clean; NOT yet live-tested against a real API key (ADR-0097)
+- [x] Gemini `ProviderAdapter` implementation, enabled end-to-end — real `streamGenerateContent` SSE streaming, `tsc --noEmit` clean; NOT yet live-tested against a real API key (ADR-0097)
+- [x] Local LLM (Ollama) adapter path implemented for at least one provider's node — already built and live-verified during the Phase 5 session, not newly built here (ADR-0098)
+- [x] Manual Input mode: copy/paste bridge UI (assembled prompt shown for copy, pasted response accepted back in) — backend `tsc --noEmit` clean; frontend reviewed and spot-checked, not full-workspace build-verified; NOT yet live-tested by Istiyak (ADR-0099)
 
 *TF-09 — Outliers panel*
-- [ ] YouTube Data API integration: channel search
-- [ ] Outlier-multiplier calculation against channel baseline (methodology per 1of10.com reference, ADR-0005)
-- [ ] Latest / Popular / Outliers toggle UI
-- [ ] Quick-add a result directly to the current board as a video node
-- [ ] Channel-not-found / no-data state is distinguishable from "zero outliers"
+- [x] YouTube Data API integration: channel search — `search.list` (channel lookup only); `tsc --noEmit` clean, backend and frontend (ADR-0100)
+- [x] Outlier-multiplier calculation against channel baseline — views vs. the channel's own median over its 25 most-recent uploads, per Istiyak's explicit methodology choice (ADR-0100, supersedes the open "exact formula" question in ADR-0005)
+- [x] Latest / Popular / Outliers toggle UI — one fetch per channel selection, re-sorted client-side across all three tabs (ADR-0100)
+- [x] Quick-add a result directly to the current board as a video node — delegates to the existing `addVideoNodeFromUrl` action, not a parallel node-creation path (ADR-0100)
+- [x] Channel-not-found / no-data state is distinguishable from "zero outliers" — two separate empty states in `outliers-panel.tsx` (ADR-0100)
 
 *TF-10 — Mindmap output node*
-- [ ] Mindmap node type + rendering
-- [ ] "Generate mindmap" action available from a chat node's response
-- [ ] Regenerate creates a new node rather than overwriting a previous one
+- [x] Mindmap node type + rendering — new `"mindmap"` `BrainyNodeType`, `mindmap-node.tsx`'s indented tree; `tsc --noEmit` clean, backend and frontend (ADR-0101)
+- [x] "Generate mindmap" action available from a chat node's response — extra one-shot call to the response's own already-configured provider/model, per Istiyak's explicit methodology choice (ADR-0101); blocked with a clear toast in Manual Input mode, which has no model to call
+- [x] Regenerate creates a new node rather than overwriting a previous one — `addMindmapNode` offsets each new node 320px right + 40px staggered per prior generation from the same source (ADR-0101)
 - [ ] **Phase 6 "done looks like" verified**
 
 **Depends on:** Phase 4 (adapter interface, chat response data to generate mindmaps from), Phase 5 (video nodes, for outliers quick-add).
 **Verify with:** `testing.md` Phase 6 section.
+
+**Status (2026-10-28):** All five Phase 6 build-checklist groups are now code-complete:
+provider adapters (OpenAI, Gemini), the Manual Input copy/paste bridge, the Outliers
+research panel, and the Mindmap output node (ADR-0097 through ADR-0101). All 17
+Outliers/Mindmap files have been committed to Istiyak's actual working tree via the
+device bridge (backend: `schema.ts`, `youtube-credentials.ts`, `outliers.ts`,
+`youtube-api.ts`, `chat.ts`, `index.ts`; frontend: `board-store.ts`, `mindmap-node.tsx`,
+`api.ts`, `chat-stream.ts`, `outliers.ts`, `outliers-panel.tsx`, `settings-store.ts`,
+`youtube-key-field.tsx`, `settings/page.tsx`, `brainboards/[id]/page.tsx`,
+`chat-node.tsx`). Backend is `tsc --noEmit` clean against the full `apps/server`
+workspace. Frontend got its strongest verification this project has had yet: a genuine
+`npm install` of `apps/web`'s real `package.json` (not an improvised partial sandbox),
+checked against the project's own actual `tsconfig.json` — zero errors in any file this
+session touched. None of this is committed to *git* yet (still just written to disk) —
+git instructions for this second batch are being given to Istiyak now, on top of the
+first batch (OpenAI/Gemini/Manual Input), which per his own confirmation has not yet been
+run either. Still outstanding before Phase 6's "done looks like" can be checked: both
+git commits actually run; `npm run db:generate` + `npm run db:migrate` in `apps/server`
+for the new `youtube_credentials` table; a real YouTube Data API key obtained and saved;
+a real API key saved and one real message sent through each of OpenAI and Gemini; a real
+Manual Input assemble → paste → save round-trip; a real "Generate mindmap" click against
+at least one Native-API provider and Local LLM; and the `testing.md` Phase 6 test cases
+plus the `/phase-check` skill, per `agents.md`'s closing ritual.
+
+**Status (2026-10-29):** Two additional UI-polish rounds on top of the above, neither of
+which were on this phase's original build checklist — both closed with Istiyak:
+- **Outliers panel header/layout polish** (ADR-0103) — one-line name+handle, fixed-height
+  loading skeleton, one divider restored, body breathing room. Confirmed working.
+- **Canvas node connector/handle visual redesign** (ADR-0102, BUG-033, BUG-034) — bigger,
+  per-type accent-colored handle dots sitting outside the card edge; gradient dashed edges
+  between connected nodes with a matching arrowhead; the live drag-to-connect preview line
+  updated to the same treatment. Confirmed working through the dot sizing/color/stacking
+  rounds; the final round (arrowhead resize + drag-preview-line gradient) shipped this same
+  day and is awaiting Istiyak's re-confirmation on his machine.
+
+Git for all of this (both Phase 6's original five build-checklist groups and these two
+polish rounds) is still untouched per Istiyak's standing instruction — nothing gets
+committed until the whole of Phase 6 is tested and verified end-to-end.
+
+**Status (2026-10-29, later the same day) — "Round 2" polish backlog, items #2–#4:**
+Istiyak opened a session explicitly scoped to this backlog ("Let's start Round 2 here
+only. Once that then we will close this session") — #1 already done elsewhere, #5
+(an external "UI UX pro max skill" reference) still blocked on a repo link that was
+never provided. Picked up in the order Istiyak chose (#3, then #2, then #4):
+- **#3 Canvas background shade** (ADR-0105) — toned down via a new `accent.25` token.
+  Shipped; Istiyak could not visually verify this round and said to proceed on
+  confidence rather than wait — not yet seen on his machine.
+- **#2 Keyboard shortcuts** (ADR-0104) — went through three passes as the actual ask
+  sharpened: a stale-placeholder dialog fixed to list real shortcuts, then a `Ctrl+N`
+  New Board binding once Istiyak clarified he meant app-level shortcuts, then on-UI
+  badges (group card header pills, an always-visible badge on New Board) once he
+  clarified a hidden dialog wasn't "visually available on the action." **Ctrl+N did
+  not work when Istiyak tested it** — logged as BUG-035 and explicitly parked by his
+  own choice ("park this as bug for later") rather than debugged this session.
+- **#4 Empty states** (ADR-0106) — Trash, the Boards List's empty-folder view, the
+  folders sidebar, and both of the chat node's empty states (sessions list + message
+  thread), picked by Istiyak from a surveyed list rather than guessed at. Shipped,
+  `tsc --noEmit` clean; not yet confirmed live.
+
+Round 2 is now closed out for this session: #2–#4 shipped (one open bug, BUG-035,
+explicitly parked rather than blocking), #5 still blocked on the same external link as
+before. Git remains untouched for all of it, same standing instruction as above.
 
 ---
 

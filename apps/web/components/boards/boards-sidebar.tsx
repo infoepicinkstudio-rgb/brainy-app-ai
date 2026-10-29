@@ -90,7 +90,15 @@ export function BoardsSidebar() {
 
       <div className="mt-1 flex flex-col gap-1">
         {folders.length === 0 ? (
-          <p className="px-3 py-1 text-sm text-text-muted">No folders yet.</p>
+          // Round 2 #4 (empty-states polish) — was bare text with zero guidance. A
+          // full icon-chip treatment (the Boards List/Trash pattern) is too heavy for
+          // this 240px-wide sidebar section, so this is a compact dashed hint box
+          // instead, pointing at the "+" button directly above it rather than
+          // duplicating a second "create" affordance an inch away from the first.
+          <div className="flex flex-col items-center gap-1.5 rounded-lg border border-dashed border-border-default px-3 py-4 text-center">
+            <FolderIcon className="size-4 text-text-muted" aria-hidden="true" />
+            <p className="text-xs text-text-muted">No folders yet — use the + above to add one.</p>
+          </div>
         ) : (
           folders.map((folder) => (
             <FolderRow

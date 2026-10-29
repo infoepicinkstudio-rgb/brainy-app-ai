@@ -14,6 +14,7 @@
 // folder and favorite — none of which make sense for an already-deleted board.
 
 import * as React from "react";
+import { Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -102,7 +103,18 @@ export default function TrashPage() {
         <h1 className="text-2xl font-semibold tracking-tight text-text-primary">Trash</h1>
 
         {boards.length === 0 ? (
-          <p className="mt-8 text-sm text-text-secondary">Trash is empty.</p>
+          // Round 2 #4 (empty-states polish) — was bare text; now matches the Boards
+          // List's own empty-state pattern (icon chip + centered text). Neutral gray
+          // (`bg-background-muted`), not the accent tint the Boards List empty state
+          // uses — that one has a "New board" CTA right under it, this one has nothing
+          // to click (an empty Trash isn't an invitation to do anything), so it stays
+          // informational rather than actionable-looking.
+          <div className="mt-16 flex flex-col items-center gap-3 text-center">
+            <span className="flex size-12 items-center justify-center rounded-xl bg-background-muted text-text-muted">
+              <Trash2 className="size-6" aria-hidden="true" />
+            </span>
+            <p className="text-sm text-text-secondary">Trash is empty.</p>
+          </div>
         ) : (
           <div className="mt-6 flex flex-col divide-y divide-border-muted rounded-lg border border-border-default bg-background-surface">
             {boards.map((board, index) => (

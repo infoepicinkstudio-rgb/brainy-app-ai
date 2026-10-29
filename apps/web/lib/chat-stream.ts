@@ -8,7 +8,8 @@
 // needs a POST body (the prompt, attachments, toggles) — a documented EventSource
 // limitation, not an oversight.
 
-import { API_BASE_URL, api, ApiError } from "@/lib/api";
+import { API_BASE_URL, api, ApiError, manualAssembleRequest, generateMindmapRequest } from "@/lib/api";
+import type { MindmapTreeNode } from "@/stores/board-store";
 
 export type ChatStreamEvent =
   | { type: "text"; text: string }
@@ -46,6 +47,59 @@ export async function listChatSessions(boardId: string, nodeId: string): Promise
 export async function createChatSession(boardId: string, nodeId: string): Promise<ChatSession> {
   const { session } = await api.post<{ session: ChatSession }>(`/api/boards/${boardId}/nodes/${nodeId}/sessions`, {});
   return session;
+}
+
+// Manual Input bridge (F-12/F-20, Phase 6) ---------------------------------------
+// Two plain REST calls, deliberately NOT streamed — there's no model response to
+// stream, just (1) build the text Istiyak would paste elsewhere, and (2) save
+// whatever he pastes back as an ordinary turn.
+
+/** Preview-only — runs the same context-assembly pipeline every other execution
+ * mode uses (so a connected video/link can still trigger extraction on a cache
+ * miss) and returns the plain-text prompt to show in a copy box. Never writes to
+ * `chat_messages`. */
+export async function assembleManualPrompt(boardId: string, nodeId: string, prompt: string): Promise<string> {
+  const { assembledPrompt } = await manualAssembleRequest<{ assembledPrompt: string }>(
+    `/api/boards/${boardId}/nodes/${nodeId}/manual-assemble`,
+    { prompt }
+  );
+  return assembledPrompt;
+}
+
+export interface ManualTurnMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** Commits a completed manual turn — the prompt that was sent externally, plus the
+ * reply pasted back in. Saved as an ordinary user/assistant pair (routes/chat.ts's
+ * `/manual-turn`), same shape `chat-history` already returns, so the two messages
+ * this resolves to can be appended straight onto the existing `messages` list. */
+export async function saveManualTurn(
+  boardId: string,
+  nodeId: string,
+  prompt: string,
+  response: string,
+  sessionId?: string
+): Promise<{ userMessage: ManualTurnMessage; assistantMessage: ManualTurnMessage }> {
+  return api.post<{ userMessage: ManualTurnMessage; assistantMessage: ManualTurnMessage }>(
+    `/api/boards/${boardId}/nodes/${nodeId}/manual-turn`,
+    { prompt, response, sessionId }
+  );
+}
+
+// Mindmap generation (F-17/TF-10, ADR-0101) -------------------------------------
+// One plain POST, no SSE — see routes/chat.ts's own comment on `/generate-mindmap`
+// for why this is a one-shot structuring call, not a conversation turn.
+
+export interface GeneratedMindmap {
+  topic: string;
+  children: MindmapTreeNode[];
+}
+
+export async function generateMindmap(boardId: string, nodeId: string, content: string): Promise<GeneratedMindmap> {
+  return generateMindmapRequest<GeneratedMindmap>(`/api/boards/${boardId}/nodes/${nodeId}/generate-mindmap`, { content });
 }
 
 /** Uploads one image ahead of sending — returned `ChatAttachment` is what gets passed

@@ -6,13 +6,30 @@
 
 import * as React from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Plus, LayoutGrid } from "lucide-react";
+import { Plus, LayoutGrid, Folder } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { BoardCard, type BoardSummary } from "@/components/boards/board-card";
 import { NamePromptDialog } from "@/components/boards/name-prompt-dialog";
 import { useFoldersStore } from "@/stores/folders-store";
 import { useBoardsRefreshStore } from "@/stores/boards-refresh-store";
+
+// Round 2 #2, 3rd pass (Istiyak: "Can't able to see any Keyboard shortcut across the
+// App. It should be Visually available on the actions on Frontend uI. i.e. New Board
+// {Ctrl+N}") — a hover tooltip or a dialog buried behind the profile menu doesn't
+// satisfy "visually available on the action": this renders the shortcut key directly
+// ON the button, always visible, not revealed on hover/interaction the way the
+// group-card pills (group-node.tsx) are. Inverted-contrast badge (translucent white
+// on the button's own solid accent fill), matching the same light-badge-on-dark-fill
+// idea those pills use, just adapted to this button's `variant="primary"` background
+// instead of the group header's dark neutral fill.
+function NewBoardShortcutBadge() {
+  return (
+    <kbd className="rounded border border-white/30 bg-white/10 px-1 py-px text-[10px] font-semibold leading-none text-text-on-accent">
+      Ctrl+N
+    </kbd>
+  );
+}
 
 export default function BoardsListPage() {
   // useSearchParams() (for the active ?folder= filter) needs a Suspense boundary
@@ -46,6 +63,34 @@ function BoardsListContent() {
   React.useEffect(() => {
     loadFolders();
   }, [loadFolders]);
+
+  // Round 2 #2 (Istiyak: "Shortcut to create new board") — Ctrl+N opens the same "New
+  // board" dialog as the button above, guarded against an active text field exactly
+  // like page.tsx's own canvas-shortcut handler. NOTE (flagged, not silently assumed
+  // working): Ctrl+N specifically is a browser-RESERVED shortcut in Chrome/Firefox/
+  // Edge ("open a new window") that `event.preventDefault()` cannot reliably block —
+  // unlike most other combos this app binds. Istiyak was offered Ctrl+Shift+N (which
+  // doesn't have this collision) as the alternative and chose Ctrl+N anyway, so this
+  // ships as asked — but if it doesn't actually fire on his machine/browser, that's
+  // this known browser limitation, not a bug in this handler, and Ctrl+Shift+N is the
+  // one-line fallback.
+  React.useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      const active = document.activeElement;
+      const isEditingSomething =
+        active instanceof HTMLInputElement ||
+        active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLElement && active.isContentEditable);
+      if (isEditingSomething) return;
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        setNewBoardOpen(true);
+      }
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // Fetch-on-mount (and on-demand via `load`) done the react.dev way — see the
   // original comment this carries forward: the fetch and its setState calls happen
@@ -153,6 +198,7 @@ function BoardsListContent() {
           <Button size="sm" onClick={() => setNewBoardOpen(true)}>
             <Plus className="size-3.5" aria-hidden="true" />
             New board
+            <NewBoardShortcutBadge />
           </Button>
         </div>
 
@@ -167,12 +213,22 @@ function BoardsListContent() {
             <Button size="sm" onClick={() => setNewBoardOpen(true)}>
               <Plus className="size-3.5" aria-hidden="true" />
               New board
+              <NewBoardShortcutBadge />
             </Button>
           </div>
         ) : visibleBoards.length === 0 ? (
-          <p className="mt-8 text-sm text-text-secondary">
-            No boards here yet — use a board&apos;s &quot;⋮&quot; menu to move one into this folder.
-          </p>
+          // Round 2 #4 (empty-states polish) — was bare text; same icon-chip pattern as
+          // the top-level empty state above, Folder-themed since this is specifically
+          // an empty FOLDER (not "no boards at all"). Wording left exactly as it was —
+          // this pass is the visual treatment, not a rewrite of what it says.
+          <div className="mt-16 flex flex-col items-center gap-3 text-center">
+            <span className="flex size-12 items-center justify-center rounded-xl bg-background-muted text-text-muted">
+              <Folder className="size-6" aria-hidden="true" />
+            </span>
+            <p className="text-sm text-text-secondary">
+              No boards here yet — use a board&apos;s &quot;⋮&quot; menu to move one into this folder.
+            </p>
+          </div>
         ) : (
           <div className="mt-6 flex flex-col divide-y divide-border-muted rounded-lg border border-border-default bg-background-surface">
             {visibleBoards.map((board, index) => (

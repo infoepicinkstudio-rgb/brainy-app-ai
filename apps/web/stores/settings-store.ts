@@ -50,6 +50,13 @@ interface SettingsState {
   providers: ProviderStatus[];
   providersLoaded: boolean;
 
+  // Outliers panel's YouTube Data API key (F-15/TF-09, ADR-0100) — deliberately its
+  // own small bit of state, not folded into `providers`/`ProviderStatus`: see
+  // db/schema.ts's own comment on `youtube_credentials` for why this isn't a fourth
+  // provider. Same "frontend only ever learns a boolean" shape as every other key.
+  youtubeConfigured: boolean;
+  youtubeConfiguredLoaded: boolean;
+
   // Brand/Voice Profile
   brandProfile: BrandProfile | null;
   brandProfileLoaded: boolean;
@@ -67,6 +74,10 @@ interface SettingsState {
   clearProviderKey: (provider: Provider) => Promise<void>;
   setExecutionMode: (provider: Provider, mode: ExecutionMode) => Promise<void>;
 
+  loadYoutubeStatus: () => Promise<void>;
+  saveYoutubeKey: (apiKey: string) => Promise<void>;
+  clearYoutubeKey: () => Promise<void>;
+
   loadBrandProfile: () => Promise<void>;
   saveBrandProfile: (content: string) => Promise<void>;
 }
@@ -80,6 +91,9 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   providers: [],
   providersLoaded: false,
+
+  youtubeConfigured: false,
+  youtubeConfiguredLoaded: false,
 
   brandProfile: null,
   brandProfileLoaded: false,
@@ -128,6 +142,21 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setExecutionMode: async (provider, mode) => {
     const updated = await api.put<ProviderStatus>(`/api/providers/${provider}`, { executionMode: mode });
     set({ providers: replaceProvider(get().providers, updated) });
+  },
+
+  loadYoutubeStatus: async () => {
+    const { isConfigured } = await api.get<{ isConfigured: boolean }>("/api/youtube/credentials");
+    set({ youtubeConfigured: isConfigured, youtubeConfiguredLoaded: true });
+  },
+
+  saveYoutubeKey: async (apiKey: string) => {
+    const { isConfigured } = await api.put<{ isConfigured: boolean }>("/api/youtube/credentials", { apiKey });
+    set({ youtubeConfigured: isConfigured });
+  },
+
+  clearYoutubeKey: async () => {
+    const { isConfigured } = await api.delete<{ isConfigured: boolean }>("/api/youtube/credentials");
+    set({ youtubeConfigured: isConfigured });
   },
 
   loadBrandProfile: async () => {

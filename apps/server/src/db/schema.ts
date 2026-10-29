@@ -158,6 +158,23 @@ export const provider_credentials = sqliteTable("provider_credentials", {
 });
 
 /**
+ * Phase 6 (F-15/TF-09, ADR-0100) — a single row holding the YouTube Data API v3 key the
+ * Outliers panel needs, encrypted at rest with the SAME `db/crypto.ts` helpers as
+ * `provider_credentials.api_key` above (ADR-0060) rather than a plaintext column. A
+ * deliberately SEPARATE table, not a fourth row in `provider_credentials`: a YouTube key
+ * isn't a chat `ProviderAdapter` and has no `execution_mode` concept (local/native/
+ * manual means nothing for a plain data lookup) — reusing that table would mean every
+ * row carrying a column meaningless to it. Singleton by convention (never more than one
+ * row — there's only one YouTube key to hold), created lazily the first time Settings'
+ * Outliers section is touched, same lazy-creation pattern as `provider_credentials`.
+ */
+export const youtube_credentials = sqliteTable("youtube_credentials", {
+  id: id(),
+  api_key: text("api_key"), // encrypted ciphertext; null = not configured
+  ...timestamps,
+});
+
+/**
  * Cached extracted content for anything expensive to pull text/data out of —
  * video/audio transcripts (ADR-0044) and, since ADR-0053, file-node PDF/DOCX/XLSX
  * text/data. source_key is a source URL *or* a file-content hash.

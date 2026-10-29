@@ -9,17 +9,16 @@ import {
   BackgroundVariant,
   Controls,
   ControlButton,
-  MarkerType,
   SelectionMode,
   useReactFlow,
   type Node,
   type NodeTypes,
+  type EdgeTypes,
   type OnNodeDrag,
-  type DefaultEdgeOptions,
   type IsValidConnection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Type, Link2, FileUp, Bot, Cpu, Gem, Undo2, Redo2, Plus, Minus, Maximize2 } from "lucide-react";
+import { Type, Link2, FileUp, Bot, Cpu, Gem, Undo2, Redo2, Plus, Minus, Maximize2, Compass } from "lucide-react";
 import { useBoardStore, RF_GROUP_TYPE, type ChatNodeData } from "@/stores/board-store";
 import { useToastStore } from "@/stores/toast-store";
 import { useSettingsStore } from "@/stores/settings-store";
@@ -30,7 +29,11 @@ import { VideoNode } from "@/components/canvas/video-node";
 import { AudioNode } from "@/components/canvas/audio-node";
 import { GroupNode } from "@/components/canvas/group-node";
 import { ChatNode } from "@/components/canvas/chat-node";
+import { MindmapNode } from "@/components/canvas/mindmap-node";
+import CanvasEdge from "@/components/canvas/canvas-edge";
+import CanvasConnectionLine from "@/components/canvas/canvas-connection-line";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
+import { OutliersPanel } from "@/components/canvas/outliers-panel";
 import { Button } from "@/components/ui/button";
 import { ToastHost } from "@/components/ui/toast-host";
 
@@ -44,7 +47,19 @@ const nodeTypes: NodeTypes = {
   video: VideoNode,
   audio: AudioNode,
   chat: ChatNode,
+  mindmap: MindmapNode,
   [RF_GROUP_TYPE]: GroupNode,
+};
+
+// Round 5 (new) — Istiyak: "Connector streaming lines should be gradient and should
+// adapt like from card to card." Registered under React Flow's own built-in "default"
+// key, NOT a new custom `type` string: every edge (loaded from the server or freshly
+// drag-connected) already resolves to "default" whenever `edge.type` is unset, which is
+// every edge today (nothing in board-store.ts ever sets one) — overriding this one key
+// swaps every edge's RENDERING over to canvas-edge.tsx with no data-shape or API change
+// anywhere. See that file for how it reads each endpoint's own accent color.
+const edgeTypes: EdgeTypes = {
+  default: CanvasEdge,
 };
 
 // Phase 4 — one toolbar button per provider's chat node. Icon/label duplicated from
@@ -81,17 +96,6 @@ const FIT_VIEW_OPTIONS = { padding: 0.4, maxZoom: 1 };
 // specificity short of `!important`) instead, on every custom icon in this cluster.
 const CONTROL_ICON_STYLE: React.CSSProperties = { fill: "none" };
 
-// TF-06 (Phase 3) — "Edge visually distinguishes direction (source → target)": a closed
-// arrowhead at the target end, the universal convention for a directed connection, is
-// simpler and more legible at this card size than color-coding or a label would be.
-// `var(--color-text-muted)` (not an accent color) so an edge reads as structural, not as
-// belonging to one particular node's own accent — it connects two different-colored
-// cards, so tying its color to either one would misleadingly favor that node.
-const DEFAULT_EDGE_OPTIONS: DefaultEdgeOptions = {
-  markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18, color: "var(--color-text-muted)" },
-  style: { stroke: "var(--color-text-muted)", strokeWidth: 1.5 },
-};
-
 export default function BoardCanvasPage() {
   // useParams() is only resolvable at request time, which next.config.ts's
   // cacheComponents option (Phase 0 scaffolding) requires a Suspense boundary
@@ -125,6 +129,7 @@ function CanvasShell({ boardId }: { boardId: string }) {
     onEdgesChange,
     connectNodes,
     saveNodePosition,
+    reparentNode,
     addTextNode,
     addLinkNode,
     addFileNode,
@@ -142,8 +147,89 @@ function CanvasShell({ boardId }: { boardId: string }) {
   } = useBoardStore();
   const canUndo = useBoardStore((state) => state.past.length > 0);
   const canRedo = useBoardStore((state) => state.future.length > 0);
-  const { screenToFlowPosition, zoomIn, zoomOut, fitView, getNodes } = useReactFlow();
+  const { screenToFlowPosition, zoomIn, zoomOut, fitView, getNodes, getIntersectingNodes, getViewport, setViewport } =
+    useReactFlow();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Round 1 bug #6 (Istiyak: "Trackpad zoom/pan blocked when mouse is over a card") —
+  // card content that needs its own scroll (a text card's body, a chat's message list)
+  // is wrapped in React Flow's own "nowheel" class so a two-finger scroll there moves
+  // that content instead of the whole canvas — correct, and not what was reported
+  // broken. But @xyflow/react's own pane-level wheel handler (confirmed via its
+  // compiled source — createPanOnScrollHandler/createZoomOnScrollHandler in
+  // @xyflow/system) treats "nowheel" as a blanket switch: it ALSO swallows PINCH-zoom
+  // (ctrlKey+wheel, how every browser reports a trackpad pinch) over that same region,
+  // with nothing underneath to catch it — so pinching while the cursor sits over a
+  // card's text or chat body does nothing at all: no canvas zoom, and no page zoom
+  // either (that part's deliberately prevented by the library itself). There's no
+  // built-in option in this version to exempt pinch from "nowheel", so this
+  // reimplements just the pinch case by hand — using the same cursor-anchored zoom
+  // math React Flow's own pinch handler uses internally (confirmed against its
+  // source) — and only steps in when the wheel event actually originated inside a
+  // "nowheel" region. Everywhere else on the canvas, React Flow's existing pinch/pan
+  // handling is untouched, so plain two-finger scroll still scrolls card content
+  // exactly as before.
+  const canvasWrapperRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    const wrapperEl = canvasWrapperRef.current;
+    if (!wrapperEl) return;
+    // Re-bound with an explicit non-null type: handleWheel below is a closure invoked
+    // later by addEventListener, and TS doesn't carry a null-check's narrowing across
+    // a function boundary like that — it would otherwise still see `el` as possibly
+    // null inside handleWheel despite the guard immediately above.
+    const el: HTMLDivElement = wrapperEl;
+
+    const isMacOs = typeof navigator !== "undefined" && navigator.userAgent.indexOf("Mac") >= 0;
+
+    function handleWheel(event: WheelEvent) {
+      if (!event.ctrlKey) return; // plain two-finger scroll — leave nowheel's local-scroll behavior exactly as today
+
+      // Round 1 bug #6 follow-up (Istiyak: after the fix above, pinching over the
+      // Outliers panel or the navbar zoomed the actual BROWSER PAGE instead — the
+      // panel got cut off and the profile menu vanished, both pushed past the
+      // now-zoomed viewport). Root cause: the Outliers panel and the navbar are
+      // rendered OUTSIDE React Flow's own DOM tree entirely (siblings of it, not
+      // descendants — see page.tsx's <main>/OutliersPanel and layout.tsx's
+      // <Navbar>/{children}), so a pinch there never reached ANY handler that calls
+      // preventDefault — not React Flow's own (it only ever sees events that land
+      // inside its pane), and not the handler below either, since that was only
+      // attached to the canvas wrapper. Listening on `document` instead closes that
+      // gap: every ctrlKey+wheel (pinch) anywhere on this page has its native
+      // page-zoom suppressed unconditionally, before deciding whether there's
+      // anything to hand-zoom.
+      event.preventDefault();
+
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest(".nowheel")) return; // not a nowheel region — React Flow's own pinch handling already covers plain canvas/cards; nothing to hand-zoom when pinching over the Outliers panel or navbar, so preventDefault above is all that's needed there
+
+      const rect = el.getBoundingClientRect();
+      const px = event.clientX - rect.left;
+      const py = event.clientY - rect.top;
+
+      // Same formula @xyflow/system's own wheelDelta uses — a trackpad pinch reports a
+      // much smaller deltaY per pinch-amount on macOS than on Windows, hence the 10x.
+      const factor = isMacOs ? 10 : 1;
+      const pinchDelta = -event.deltaY * (event.deltaMode === 1 ? 0.05 : event.deltaMode ? 1 : 0.002) * factor;
+
+      const { x, y, zoom } = getViewport();
+      const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * Math.pow(2, pinchDelta)));
+      const ratio = nextZoom / zoom;
+      // Keeps the flow-space point under the cursor fixed on screen through the zoom
+      // change — the standard "zoom toward cursor" formula, same effect as d3-zoom's
+      // own scaleTo(selection, k, point) that the library uses for every other pinch.
+      void setViewport({
+        x: px - (px - x) * ratio,
+        y: py - (py - y) * ratio,
+        zoom: nextZoom,
+      });
+    }
+
+    // Attached to `document`, not `el` — see handleWheel's own comment above for why
+    // the canvas wrapper alone isn't enough to catch every pinch on this page.
+    document.addEventListener("wheel", handleWheel, { passive: false });
+    return () => document.removeEventListener("wheel", handleWheel);
+  }, [getViewport, setViewport]);
 
   // Phase 4 — gates the three chat-provider toolbar buttons below by the same
   // `isConfigured()` the backend itself checks at send time (chat.ts), so a button
@@ -161,6 +247,10 @@ function CanvasShell({ boardId }: { boardId: string }) {
   // qualifies, and without this a second click while one upload is still running could
   // kick off a concurrent second upload.
   const [isUploading, setIsUploading] = React.useState(false);
+  // Phase 6 (F-15/TF-09) — the Outliers panel is a floating overlay, not a route of
+  // its own (quick-add needs to create a node on THIS board, which only makes sense
+  // while the canvas it's adding to is actually mounted).
+  const [isOutliersOpen, setIsOutliersOpen] = React.useState(false);
   // Keyed by node id, populated on drag start and read on drag stop — lets a drag's
   // undo entry record where the node actually came FROM, not just where it ended up
   // (board-store.ts's `saveNodePosition`, ADR-0066).
@@ -210,13 +300,50 @@ function CanvasShell({ boardId }: { boardId: string }) {
     []
   );
 
+  // Round 1 bug #2 — a plain drag that lands a node inside/outside a group's frame
+  // joins/leaves that group. Uses React Flow's own getIntersectingNodes (the same
+  // mechanism its own grouping examples use) rather than hand-rolled bounding-box math.
+  // A member's `node.position` is relative to its parent (React Flow's convention), so
+  // this converts to/from absolute canvas coordinates explicitly wherever needed.
+  const handleGroupMembershipAfterDrag = React.useCallback(
+    (node: Node) => {
+      if (node.type === RF_GROUP_TYPE) return; // no nesting a group into another group
+      const width = node.measured?.width ?? node.width ?? 0;
+      const height = node.measured?.height ?? node.height ?? 0;
+      const currentParent = node.parentId ? getNodes().find((n) => n.id === node.parentId) : undefined;
+      const absoluteX = currentParent ? currentParent.position.x + node.position.x : node.position.x;
+      const absoluteY = currentParent ? currentParent.position.y + node.position.y : node.position.y;
+
+      const overlappingGroup = getIntersectingNodes({ x: absoluteX, y: absoluteY, width, height }).find(
+        (n) => n.type === RF_GROUP_TYPE
+      );
+
+      if (overlappingGroup && overlappingGroup.id !== node.parentId) {
+        // Joining a group it wasn't already in (whether it was standalone or switching
+        // straight from a different group).
+        const fromPosition = { x: node.position.x, y: node.position.y }; // already in its current parent's space (or absolute, if it had none)
+        const toPosition = { x: absoluteX - overlappingGroup.position.x, y: absoluteY - overlappingGroup.position.y };
+        reparentNode(node.id, node.parentId ?? null, fromPosition, overlappingGroup.id, toPosition);
+      } else if (!overlappingGroup && node.parentId) {
+        // Dragged fully outside its current group's frame — release onto the open canvas.
+        const fromPosition = { x: node.position.x, y: node.position.y };
+        reparentNode(node.id, node.parentId, fromPosition, null, { x: absoluteX, y: absoluteY });
+      }
+      // Otherwise: still inside the same group (ordinary in-group repositioning, the
+      // "move" entry from saveNodePosition above already covers it), or never touched a
+      // group at all either way — nothing to reparent.
+    },
+    [getNodes, getIntersectingNodes, reparentNode]
+  );
+
   const handleNodeDragStop: OnNodeDrag<Node> = React.useCallback(
     (_event, node) => {
       const from = dragStartPositions.current.get(node.id) ?? node.position;
       dragStartPositions.current.delete(node.id);
       saveNodePosition(node.id, from, { x: node.position.x, y: node.position.y });
+      handleGroupMembershipAfterDrag(node);
     },
-    [saveNodePosition]
+    [saveNodePosition, handleGroupMembershipAfterDrag]
   );
 
   // Undo/redo/group/ungroup keyboard shortcuts (Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y —
@@ -551,6 +678,12 @@ function CanvasShell({ boardId }: { boardId: string }) {
             disabled: isUploading,
             busy: isUploading,
           },
+          {
+            key: "outliers",
+            label: "Outliers research panel",
+            icon: Compass,
+            onClick: () => setIsOutliersOpen(true),
+          },
           ...CHAT_PROVIDERS.map(({ provider, label, icon }) => {
             const status = providers.find((p) => p.provider === provider);
             const isConfigured = Boolean(status?.isConfigured);
@@ -599,11 +732,43 @@ function CanvasShell({ boardId }: { boardId: string }) {
       />
       <ToastHost />
 
-      <div className="flex-1" onDragOver={handleDragOver} onDrop={handleDrop}>
+      <OutliersPanel
+        open={isOutliersOpen}
+        onOpenChange={setIsOutliersOpen}
+        // Round 2 select-then-bulk-add (outliers-panel.tsx's top comment) — fans the
+        // batch out diagonally from the same base center point, same +40px-per-item
+        // convention board-store.ts's `addMindmapNode` already uses for "repeated
+        // generations from one source," so N selected videos land as N visibly
+        // separate cards instead of stacking exactly on top of each other.
+        onQuickAdd={async (urls) => {
+          const base = centerPosition();
+          const results = await Promise.all(
+            urls.map((url, index) => addVideoNodeFromUrl({ x: base.x + index * 40, y: base.y + index * 40 }, url))
+          );
+          const failedCount = results.filter((wasVideo) => !wasVideo).length;
+          if (failedCount > 0) {
+            useToastStore.getState().showToast(
+              failedCount === urls.length
+                ? "Couldn't add those videos to the board. Try again."
+                : `Added ${urls.length - failedCount} of ${urls.length} — the rest couldn't be added. Try again.`
+            );
+          }
+        }}
+      />
+
+      <div ref={canvasWrapperRef} className="flex-1" onDragOver={handleDragOver} onDrop={handleDrop}>
         <ReactFlow
           nodes={orderedNodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          // Istiyak: "While dragging also showing old style not the new gradient style."
+          // `edgeTypes` above only styles a COMPLETED edge — the in-progress drag preview
+          // (before onConnect ever fires) is a separate React Flow render path, governed
+          // by this prop alone. canvas-connection-line.tsx mirrors canvas-edge.tsx's own
+          // gradient/dashed look so the preview already matches the edge it's about to
+          // become.
+          connectionLineComponent={CanvasConnectionLine}
           onNodesChange={onNodesChange}
           onNodeDragStart={handleNodeDragStart}
           onNodeDragStop={handleNodeDragStop}
@@ -611,14 +776,12 @@ function CanvasShell({ boardId }: { boardId: string }) {
           // from one card's handle is released over a valid target handle on another;
           // connectNodes (board-store.ts) does the actual create + history entry.
           // onEdgesChange is edges' counterpart to onNodesChange above (same
-          // select-is-local/remove-goes-through-the-store split). defaultEdgeOptions
-          // gives every edge — freshly connected or loaded from the server — the same
-          // directional arrowhead without node-chrome.tsx or board-store.ts needing to
-          // know about styling at all.
+          // select-is-local/remove-goes-through-the-store split). Styling (the gradient
+          // line + its own colored arrowhead) now lives entirely in canvas-edge.tsx via
+          // `edgeTypes` above, not a `defaultEdgeOptions` prop here.
           onConnect={connectNodes}
           onEdgesChange={onEdgesChange}
           isValidConnection={isValidConnection}
-          defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
           // Deletion UX overhaul (ADR-0065): Delete key only — Backspace used to also be
           // bound here, which meant merely SELECTING a node and then pressing Backspace
           // for any ordinary reason silently deleted it with no confirmation and (at the

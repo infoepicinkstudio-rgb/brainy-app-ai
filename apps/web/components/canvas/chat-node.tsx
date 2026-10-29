@@ -21,7 +21,9 @@ import {
   Gem,
   Image as ImageIcon,
   Loader2,
+  MessageSquare,
   Mic,
+  Network,
   PanelLeft,
   PanelLeftClose,
   Plus,
@@ -29,10 +31,12 @@ import {
   Search,
   Send,
   Settings2,
+  Square,
   X,
   type LucideIcon,
 } from "lucide-react";
 import { useBoardStore, type ChatNodeData } from "@/stores/board-store";
+import { useToastStore } from "@/stores/toast-store";
 import { NodeChrome } from "@/components/canvas/node-chrome";
 import { NodeHeader } from "@/components/canvas/node-header";
 import {
@@ -40,6 +44,9 @@ import {
   listChatSessions,
   createChatSession,
   uploadChatImage,
+  assembleManualPrompt,
+  saveManualTurn,
+  generateMindmap,
   type ChatSession,
   type ChatAttachment,
 } from "@/lib/chat-stream";
@@ -69,8 +76,16 @@ const MODEL_OPTIONS: Record<ChatNodeData["provider"], Array<{ id: string; label:
     { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" },
     { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
   ],
-  openai: [{ id: "gpt-5", label: "GPT-5" }],
-  gemini: [{ id: "gemini-3-pro", label: "Gemini 3 Pro" }],
+  openai: [
+    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna (fast, cheap)" },
+    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra (balanced)" },
+    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol (strongest)" },
+  ],
+  gemini: [
+    { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash-Lite (fast, cheap)" },
+    { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash (balanced)" },
+    { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro (strongest)" },
+  ],
 };
 
 const EXECUTION_MODE_OPTIONS: Array<{ value: ChatNodeData["executionMode"]; label: string }> = [
@@ -276,6 +291,7 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
   const duplicateSelection = useBoardStore((state) => state.duplicateSelection);
   const saveNodeSize = useBoardStore((state) => state.saveNodeSize);
   const refreshNodesData = useBoardStore((state) => state.refreshNodesData);
+  const addMindmapNode = useBoardStore((state) => state.addMindmapNode);
 
   // Same ADR-0070 pattern every other node type uses — see text-node.tsx's own
   // comment for why this must read `data.cardWidth/cardHeight`, not NodeProps' own
@@ -534,6 +550,113 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
     }
   }
 
+  // Mindmap generation (F-17/TF-10, ADR-0101) --------------------------------------
+  // A single `generatingMessageId` (not a per-message busy set) is enough here —
+  // generating more than one mindmap at once from the same card would be an odd thing
+  // to even attempt, and this keeps every other message's button correctly disabled
+  // while one generation is in flight, matching `isSending`'s own all-or-nothing gate
+  // on Regenerate above.
+  const [generatingMessageId, setGeneratingMessageId] = React.useState<string | null>(null);
+  async function handleGenerateMindmap(message: DisplayMessage) {
+    if (isManualMode) {
+      useToastStore
+        .getState()
+        .showToast("Generate mindmap isn't available in Manual Input mode — switch this node to Native API or Local LLM first.");
+      return;
+    }
+    if (!boardId || generatingMessageId) return;
+    setGeneratingMessageId(message.id);
+    try {
+      const result = await generateMindmap(boardId, id, message.content);
+      await addMindmapNode(id, result.topic, result.children);
+    } catch (err) {
+      useToastStore.getState().showToast(err instanceof ApiError ? err.message : "Couldn't generate a mindmap. Try again.");
+    } finally {
+      setGeneratingMessageId(null);
+    }
+  }
+
+  // Manual Input bridge (F-12/F-20, Phase 6) ---------------------------------------
+  // Not a send — a copy/paste convenience. `prompt`/`setPrompt` (the normal composer
+  // state above) doubles as the draft here too; `manualAssembled` just tracks whether
+  // that draft has been turned into a copyable block yet. Resets whenever the thread
+  // itself changes, same as `messages` does, so switching sessions never leaves a
+  // stale assembled prompt sitting over the wrong conversation.
+  const isManualMode = typedData.executionMode === "manual";
+  const [manualAssembled, setManualAssembled] = React.useState<string | null>(null);
+  const [manualResponseDraft, setManualResponseDraft] = React.useState("");
+  const [isAssembling, setIsAssembling] = React.useState(false);
+  const [isSavingManualTurn, setIsSavingManualTurn] = React.useState(false);
+
+  React.useEffect(() => {
+    setManualAssembled(null);
+    setManualResponseDraft("");
+  }, [activeSessionId]);
+
+  // Optional `text` lets a quick-action pill assemble its own canned prompt directly,
+  // the same way it calls `send(action.prompt)` in every other mode, without a
+  // setPrompt-then-read-stale-state round trip.
+  async function assembleManual(text?: string) {
+    const toAssemble = (text ?? prompt).trim();
+    if (!boardId || !toAssemble || isAssembling) return;
+    setError(null);
+    setIsAssembling(true);
+    setPrompt(toAssemble);
+    try {
+      setManualAssembled(await assembleManualPrompt(boardId, id, toAssemble));
+    } catch {
+      setError("Couldn't assemble the prompt — check the server is running.");
+    } finally {
+      setIsAssembling(false);
+    }
+  }
+
+  function cancelManualAssembled() {
+    setManualAssembled(null);
+    setManualResponseDraft("");
+  }
+
+  async function saveManualResponse() {
+    if (!boardId || manualAssembled === null || !manualResponseDraft.trim() || isSavingManualTurn) return;
+    setError(null);
+    setIsSavingManualTurn(true);
+
+    let sessionId = activeSessionId;
+    if (!sessionId) {
+      // Same lazy-create as the real send path — a brand-new node gets no session
+      // row until its first turn, manual or otherwise.
+      try {
+        const created = await createChatSession(boardId, id);
+        sessionId = created.id;
+        setActiveSessionId(created.id);
+        setSessions((prev) => [created, ...prev]);
+      } catch {
+        setError("Couldn't start a conversation — check the server is running.");
+        setIsSavingManualTurn(false);
+        return;
+      }
+    }
+
+    try {
+      const { userMessage, assistantMessage } = await saveManualTurn(boardId, id, prompt.trim(), manualResponseDraft.trim(), sessionId);
+      setMessages((prev) => [
+        ...prev,
+        { id: userMessage.id, role: "user", content: userMessage.content },
+        { id: assistantMessage.id, role: "assistant", content: assistantMessage.content },
+      ]);
+      setPrompt("");
+      setManualAssembled(null);
+      setManualResponseDraft("");
+      listChatSessions(boardId, id)
+        .then(setSessions)
+        .catch(() => {});
+    } catch {
+      setError("Couldn't save that turn — check the server is running.");
+    } finally {
+      setIsSavingManualTurn(false);
+    }
+  }
+
   function updateData(patch: Partial<ChatNodeData>) {
     updateNodeData(id, { ...typedData, ...patch });
     flushNodeData(id);
@@ -661,7 +784,14 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
               {!sessionsLoaded ? (
                 <p className="px-2 py-4 text-center text-[11px] text-text-muted">Loading…</p>
               ) : sessions.length === 0 ? (
-                <p className="px-2 py-4 text-center text-[11px] text-text-muted">No chats yet.</p>
+                // Round 2 #4 (empty-states polish) — was bare text. This column is only
+                // 144px wide (w-36 on the parent), too narrow for the full icon-chip
+                // treatment used elsewhere, so this is a compact icon-above-text version
+                // instead.
+                <div className="flex flex-col items-center gap-1.5 px-2 py-6 text-center">
+                  <MessageSquare className="size-4 text-text-muted" aria-hidden="true" />
+                  <p className="text-[11px] text-text-muted">No chats yet.</p>
+                </div>
               ) : (
                 sessions.map((session) => (
                   <button
@@ -690,13 +820,12 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
           </div>
 
           {/* F-12: "selecting an inert mode should say so plainly, not silently do
-              nothing". Local LLM actually sends now (Ollama) — the banner only shows
-              when it's genuinely not reachable, not as a blanket "not built" notice
-              any more. Manual Input stays a plain notice; it's intentionally a
-              copy-paste bridge, not an automatic-send mode, and isn't built here yet. */}
-          {typedData.executionMode === "manual" ? (
-            <p className="shrink-0 border-b border-border-muted px-2.5 py-1.5 text-[11px] text-text-warning">
-              Manual Input mode doesn't send automatically — switch to Native API or Local LLM to chat here.
+              nothing". Local LLM actually sends now (Ollama); Manual Input is a real
+              copy/paste bridge now too (Phase 6, F-12/F-20) — this is informational,
+              not a warning, since the mode itself isn't broken or unreachable. */}
+          {isManualMode ? (
+            <p className="shrink-0 border-b border-border-muted px-2.5 py-1.5 text-[11px] text-text-muted">
+              Manual Input — write a prompt below, copy the assembled version, then paste the reply back in once you have it.
             </p>
           ) : typedData.executionMode === "local" && localStatus && !localStatus.available ? (
             <p className="shrink-0 border-b border-border-muted px-2.5 py-1.5 text-[11px] text-text-warning">
@@ -714,7 +843,18 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
             {!historyLoaded ? (
               <p className="text-xs text-text-muted">Loading…</p>
             ) : messages.length === 0 && streamingText === null ? (
-              <p className="text-xs text-text-muted">Connect a text, file, or link node, then ask about it here.</p>
+              // Round 2 #4 (empty-states polish) — was a plain top-aligned line sitting
+              // like a stray system message. This container is the sole child in both
+              // cases, so `flex-1` here correctly fills and centers within the whole
+              // available thread area instead of sitting flush at the top.
+              <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
+                <span className="flex size-10 items-center justify-center rounded-full bg-background-muted text-text-muted">
+                  <Bot className="size-5" aria-hidden="true" />
+                </span>
+                <p className="max-w-[220px] text-xs text-text-muted">
+                  Connect a text, file, or link node, then ask about it here.
+                </p>
+              </div>
             ) : null}
             {messages.map((message, index) =>
               message.role === "user" ? (
@@ -783,6 +923,20 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
                       className="hover:text-text-primary disabled:opacity-50"
                     >
                       <RotateCcw className="size-3" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleGenerateMindmap(message)}
+                      disabled={generatingMessageId !== null}
+                      aria-label={isManualMode ? "Generate mindmap (switch to Native API or Local LLM first)" : "Generate mindmap"}
+                      title={isManualMode ? "Generate mindmap (switch to Native API or Local LLM first)" : "Generate mindmap"}
+                      className="hover:text-text-primary disabled:opacity-50"
+                    >
+                      {generatingMessageId === message.id ? (
+                        <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Network className="size-3" aria-hidden="true" />
+                      )}
                     </button>
                   </div>
                 </div>
@@ -894,137 +1048,250 @@ function ChatNodeImpl({ id, data, selected, parentId }: NodeProps) {
             </div>
           ) : null}
 
-          {/* Composer (fine-tune pass, Istiyak: "Need to fine tunned ours... looks bit
-              immature" against a second reference) — one clean rounded field and a
-              SINGLE trailing circular button that does double duty: a mic while the
-              field is empty (tap to dictate), a send arrow the moment there's something
-              to send — mirrors the reference's own single blue circle exactly, instead
-              of a separate mic button living inside the pill alongside a second send
-              button outside it. */}
-          <div className={cn("nodrag flex shrink-0 items-end gap-1.5 px-2.5 pb-1.5 pt-1.5", pendingAttachments.length === 0 && "border-t border-border-muted")}>
-            <div className="flex min-w-0 flex-1 items-center rounded-2xl border border-border-default bg-background-surface-raised px-3 py-2 focus-within:border-border-focus">
-              <textarea
-                value={prompt}
-                onChange={(event) => setPrompt(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void send(prompt);
+          {isManualMode && manualAssembled !== null ? (
+            /* Manual Input bridge, stage 2 (F-12/F-20, Phase 6) — the prompt composer
+               below is hidden while this is showing; the two states don't overlap, so
+               there's never a question of which text box is "live". */
+            <div className="nodrag flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2.5">
+              <div className="flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-medium text-text-secondary">Assembled prompt — copy this</span>
+                  <button
+                    type="button"
+                    onClick={() => void navigator.clipboard.writeText(manualAssembled)}
+                    className="nodrag flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] text-text-accent hover:bg-background-accent-muted"
+                  >
+                    <Copy className="size-3" aria-hidden="true" />
+                    Copy
+                  </button>
+                </div>
+                <textarea
+                  readOnly
+                  value={manualAssembled}
+                  rows={6}
+                  className="nowheel scrollbar-thin min-h-0 w-full resize-none rounded-md border border-border-default bg-background-surface-raised p-2 text-xs text-text-primary"
+                />
+              </div>
+              <p className="text-[11px] text-text-muted">
+                Paste the prompt above into {PROVIDER_LABELS[typedData.provider]} (or anywhere else), then bring the reply back here.
+              </p>
+              <div className="flex min-h-0 flex-1 flex-col gap-1">
+                <span className="text-[11px] font-medium text-text-secondary">Paste the response</span>
+                <textarea
+                  value={manualResponseDraft}
+                  onChange={(event) => setManualResponseDraft(event.target.value)}
+                  placeholder="Paste the reply you got back…"
+                  rows={6}
+                  disabled={isSavingManualTurn}
+                  className="nowheel scrollbar-thin min-h-0 w-full flex-1 resize-none rounded-md border border-border-default bg-background-surface-raised p-2 text-xs text-text-primary placeholder:text-text-muted disabled:opacity-50"
+                />
+              </div>
+              <div className="flex shrink-0 items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={cancelManualAssembled}
+                  disabled={isSavingManualTurn}
+                  className="nodrag rounded-full px-3 py-1.5 text-[11px] text-text-secondary hover:bg-background-muted disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveManualResponse()}
+                  disabled={isSavingManualTurn || !manualResponseDraft.trim()}
+                  className="nodrag flex items-center gap-1.5 rounded-full bg-background-accent px-3 py-1.5 text-[11px] font-medium text-text-on-accent disabled:opacity-40"
+                >
+                  {isSavingManualTurn ? <Loader2 className="size-3 animate-spin" aria-hidden="true" /> : null}
+                  Save response
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Composer (fine-tune pass, Istiyak: "Need to fine tunned ours... looks bit
+                  immature" against a second reference) — one clean rounded field and a
+                  SINGLE trailing circular button that does double duty: a mic while the
+                  field is empty (tap to dictate), a send arrow the moment there's something
+                  to send — mirrors the reference's own single blue circle exactly, instead
+                  of a separate mic button living inside the pill alongside a second send
+                  button outside it. In Manual Input mode (F-12/F-20, Phase 6), that same
+                  trailing button assembles the prompt for copying instead of sending it. */}
+              <div className={cn("nodrag flex shrink-0 items-end gap-1.5 px-2.5 pb-1.5 pt-1.5", pendingAttachments.length === 0 && "border-t border-border-muted")}>
+                <div className="flex min-w-0 flex-1 items-center rounded-2xl border border-border-default bg-background-surface-raised px-3 py-2 focus-within:border-border-focus">
+                  <textarea
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        void (isManualMode ? assembleManual() : send(prompt));
+                      }
+                    }}
+                    placeholder="Ask anything…"
+                    rows={1}
+                    disabled={isSending || isAssembling}
+                    className="nowheel scrollbar-thin min-w-0 max-h-24 flex-1 resize-none bg-transparent text-xs text-text-primary placeholder:text-text-muted focus-visible:outline-none disabled:opacity-50"
+                  />
+                </div>
+                <button
+                  type="button"
+                  // Round 1 bug #4 (Istiyak: "User should be able to stop response in
+                  // between by stop button. Currently button is in processing mode so
+                  // can't cancel the response in between") — this was a disabled
+                  // spinner for the whole `isSending` window, no click handler at all.
+                  // Now an active Stop control for that one case: aborts `send`'s own
+                  // AbortController (already wired through to the fetch and, as of
+                  // this fix, the server's provider call too — board-store.ts/
+                  // chat-stream.ts's `for await` loop ends cleanly on an abort, same
+                  // path as a normal finish, so whatever streamed in before the click
+                  // is still kept as the saved reply). `isAssembling` (Manual Input's
+                  // one-shot, non-streamed prompt build) is untouched — nothing there
+                  // runs long enough to need a cancel.
+                  onClick={() =>
+                    isSending
+                      ? abortRef.current?.abort()
+                      : hasSendableInput
+                        ? void (isManualMode ? assembleManual() : send(prompt))
+                        : toggleRecording()
                   }
-                }}
-                placeholder="Ask anything…"
-                rows={1}
-                disabled={isSending}
-                className="nowheel scrollbar-thin min-w-0 max-h-24 flex-1 resize-none bg-transparent text-xs text-text-primary placeholder:text-text-muted focus-visible:outline-none disabled:opacity-50"
-              />
-            </div>
-            <button
-              type="button"
-              onClick={() => (hasSendableInput ? void send(prompt) : toggleRecording())}
-              disabled={isSending || (!hasSendableInput && !speechSupported)}
-              aria-label={hasSendableInput ? "Send" : isRecording ? "Stop voice input" : "Voice input"}
-              title={hasSendableInput ? "Send" : isRecording ? "Stop voice input" : "Voice input"}
-              className={cn(
-                "flex size-9 shrink-0 items-center justify-center rounded-full text-text-on-accent transition-colors duration-fast disabled:opacity-40",
-                isRecording && !hasSendableInput ? "bg-background-danger" : "bg-background-accent"
-              )}
-            >
-              {isSending ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-              ) : hasSendableInput ? (
-                <Send className="size-4" aria-hidden="true" />
-              ) : (
-                <Mic className={cn("size-4", isRecording && "animate-pulse")} aria-hidden="true" />
-              )}
-            </button>
-          </div>
+                  disabled={isAssembling || (!isSending && !hasSendableInput && !speechSupported)}
+                  aria-label={
+                    isSending
+                      ? "Stop response"
+                      : hasSendableInput
+                        ? isManualMode
+                          ? "Assemble prompt"
+                          : "Send"
+                        : isRecording
+                          ? "Stop voice input"
+                          : "Voice input"
+                  }
+                  title={
+                    isSending
+                      ? "Stop response"
+                      : hasSendableInput
+                        ? isManualMode
+                          ? "Assemble prompt"
+                          : "Send"
+                        : isRecording
+                          ? "Stop voice input"
+                          : "Voice input"
+                  }
+                  className={cn(
+                    "flex size-9 shrink-0 items-center justify-center rounded-full text-text-on-accent transition-colors duration-fast disabled:opacity-40",
+                    isRecording && !hasSendableInput ? "bg-background-danger" : "bg-background-accent"
+                  )}
+                >
+                  {isSending ? (
+                    <Square className="size-3.5 fill-current" aria-hidden="true" />
+                  ) : isAssembling ? (
+                    <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                  ) : hasSendableInput ? (
+                    isManualMode ? (
+                      <Copy className="size-4" aria-hidden="true" />
+                    ) : (
+                      <Send className="size-4" aria-hidden="true" />
+                    )
+                  ) : (
+                    <Mic className={cn("size-4", isRecording && "animate-pulse")} aria-hidden="true" />
+                  )}
+                </button>
+              </div>
 
-          {/* Controls row (fine-tune pass, matched to the reference's own bottom bar: a
-              leading attach icon, the model picker, execution mode, Search/Thinking
-              toggles and the notes gear, then quick-action chips — all one row that
-              WRAPS rather than horizontally scrolls once it runs out of room, same as
-              the reference's own two-line example. Quick actions are filled
-              accent-tinted pills (not bordered/neutral) so they read as the one-click
-              suggestions they are, distinct from the stateful toggles/pickers next to
-              them — also straight from the reference. */}
-          <div className="nodrag flex shrink-0 flex-wrap items-center gap-1.5 px-2.5 pb-2">
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isUploadingImage}
-              aria-label="Attach image"
-              title="Attach image"
-              className="flex size-6 shrink-0 items-center justify-center rounded-full text-text-secondary hover:bg-background-muted hover:text-text-primary disabled:opacity-50"
-            >
-              {isUploadingImage ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <ImageIcon className="size-3.5" aria-hidden="true" />}
-            </button>
-            <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" className="hidden" onChange={handleFileChosen} />
-            <div className="relative shrink-0">
-              <select
-                className={pillSelectClass}
-                value={typedData.model}
-                onChange={(event) => updateData({ model: event.target.value })}
-                disabled={typedData.executionMode === "local" && models.length === 0}
-              >
-                {models.length > 0 ? (
-                  models.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))
-                ) : (
-                  <option value={typedData.model}>{localStatus === null ? "Loading models…" : "No local models found"}</option>
+              {/* Controls row (fine-tune pass, matched to the reference's own bottom bar: a
+                  leading attach icon, the model picker, execution mode, Search/Thinking
+                  toggles and the notes gear, then quick-action chips — all one row that
+                  WRAPS rather than horizontally scrolls once it runs out of room, same as
+                  the reference's own two-line example. Quick actions are filled
+                  accent-tinted pills (not bordered/neutral) so they read as the one-click
+                  suggestions they are, distinct from the stateful toggles/pickers next to
+                  them — also straight from the reference. */}
+              <div className="nodrag flex shrink-0 flex-wrap items-center gap-1.5 px-2.5 pb-2">
+                {/* Manual Input is a plain-text copy/paste bridge — an attached image
+                    has nowhere to go (manual-assemble only ever builds text), so the
+                    affordance is hidden here rather than letting it attach and then
+                    silently vanish at assemble time. */}
+                {!isManualMode && (
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploadingImage}
+                    aria-label="Attach image"
+                    title="Attach image"
+                    className="flex size-6 shrink-0 items-center justify-center rounded-full text-text-secondary hover:bg-background-muted hover:text-text-primary disabled:opacity-50"
+                  >
+                    {isUploadingImage ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <ImageIcon className="size-3.5" aria-hidden="true" />}
+                  </button>
                 )}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 size-2.5 -translate-y-1/2 text-text-muted" aria-hidden="true" />
-            </div>
-            <div className="relative shrink-0">
-              <select
-                className={pillSelectClass}
-                value={typedData.executionMode}
-                onChange={(event) => updateData({ executionMode: event.target.value as ChatNodeData["executionMode"] })}
-              >
-                {EXECUTION_MODE_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
+                <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" className="hidden" onChange={handleFileChosen} />
+                <div className="relative shrink-0">
+                  <select
+                    className={pillSelectClass}
+                    value={typedData.model}
+                    onChange={(event) => updateData({ model: event.target.value })}
+                    disabled={typedData.executionMode === "local" && models.length === 0}
+                  >
+                    {models.length > 0 ? (
+                      models.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.label}
+                        </option>
+                      ))
+                    ) : (
+                      <option value={typedData.model}>{localStatus === null ? "Loading models…" : "No local models found"}</option>
+                    )}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 size-2.5 -translate-y-1/2 text-text-muted" aria-hidden="true" />
+                </div>
+                <div className="relative shrink-0">
+                  <select
+                    className={pillSelectClass}
+                    value={typedData.executionMode}
+                    onChange={(event) => updateData({ executionMode: event.target.value as ChatNodeData["executionMode"] })}
+                  >
+                    {EXECUTION_MODE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 size-2.5 -translate-y-1/2 text-text-muted" aria-hidden="true" />
+                </div>
+                <button type="button" onClick={() => setWebSearchEnabled((v) => !v)} className={toggleClass(webSearchEnabled)}>
+                  <Search className="size-3" aria-hidden="true" />
+                  Search
+                </button>
+                <button type="button" onClick={() => setThinkingEnabled((v) => !v)} className={toggleClass(thinkingEnabled)}>
+                  <Brain className="size-3" aria-hidden="true" />
+                  Thinking
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowExtraSettings((v) => !v)}
+                  aria-label="More settings"
+                  title="More settings"
+                  className={cn(
+                    "flex size-6 shrink-0 items-center justify-center rounded-full",
+                    showExtraSettings ? "bg-background-accent-muted text-text-accent" : "text-text-secondary hover:bg-background-muted hover:text-text-primary"
+                  )}
+                >
+                  <Settings2 className="size-3.5" aria-hidden="true" />
+                </button>
+                <span className="h-4 w-px shrink-0 bg-border-muted" aria-hidden="true" />
+                {QUICK_ACTIONS.map((action) => (
+                  <button
+                    key={action.label}
+                    type="button"
+                    disabled={isSending || isAssembling}
+                    onClick={() => void (isManualMode ? assembleManual(action.prompt) : send(action.prompt))}
+                    className="flex h-6 shrink-0 items-center rounded-full bg-background-accent-muted px-2.5 text-[11px] font-medium text-text-accent transition-colors duration-fast hover:bg-background-accent-muted/70 disabled:opacity-50"
+                  >
+                    {action.label}
+                  </button>
                 ))}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 size-2.5 -translate-y-1/2 text-text-muted" aria-hidden="true" />
-            </div>
-            <button type="button" onClick={() => setWebSearchEnabled((v) => !v)} className={toggleClass(webSearchEnabled)}>
-              <Search className="size-3" aria-hidden="true" />
-              Search
-            </button>
-            <button type="button" onClick={() => setThinkingEnabled((v) => !v)} className={toggleClass(thinkingEnabled)}>
-              <Brain className="size-3" aria-hidden="true" />
-              Thinking
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowExtraSettings((v) => !v)}
-              aria-label="More settings"
-              title="More settings"
-              className={cn(
-                "flex size-6 shrink-0 items-center justify-center rounded-full",
-                showExtraSettings ? "bg-background-accent-muted text-text-accent" : "text-text-secondary hover:bg-background-muted hover:text-text-primary"
-              )}
-            >
-              <Settings2 className="size-3.5" aria-hidden="true" />
-            </button>
-            <span className="h-4 w-px shrink-0 bg-border-muted" aria-hidden="true" />
-            {QUICK_ACTIONS.map((action) => (
-              <button
-                key={action.label}
-                type="button"
-                disabled={isSending}
-                onClick={() => void send(action.prompt)}
-                className="flex h-6 shrink-0 items-center rounded-full bg-background-accent-muted px-2.5 text-[11px] font-medium text-text-accent transition-colors duration-fast hover:bg-background-accent-muted/70 disabled:opacity-50"
-              >
-                {action.label}
-              </button>
-            ))}
-          </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </NodeChrome>

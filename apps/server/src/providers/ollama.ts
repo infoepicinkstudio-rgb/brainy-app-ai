@@ -126,6 +126,7 @@ async function* streamChat(input: ChatInput): AsyncGenerator<ChatChunk> {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: input.model, messages: buildOllamaMessages(input), stream: true }),
+      signal: input.signal,
     });
   } catch {
     yield {

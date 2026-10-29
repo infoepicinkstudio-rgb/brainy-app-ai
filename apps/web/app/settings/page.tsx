@@ -2,12 +2,13 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowLeft, KeyRound, MessageSquareText } from "lucide-react";
+import { ArrowLeft, KeyRound, MessageSquareText, Compass } from "lucide-react";
 import { useSettingsStore } from "@/stores/settings-store";
 import { ProviderKeyField } from "@/components/settings/provider-key-field";
 import { ExecutionModeSelector } from "@/components/settings/execution-mode-selector";
 import { ToolsPanel } from "@/components/settings/tools-panel";
 import { BrandProfileEditor } from "@/components/settings/brand-profile-editor";
+import { YoutubeKeyField } from "@/components/settings/youtube-key-field";
 
 export default function SettingsPage() {
   const providers = useSettingsStore((state) => state.providers);
@@ -16,11 +17,14 @@ export default function SettingsPage() {
   const brandProfile = useSettingsStore((state) => state.brandProfile);
   const brandProfileLoaded = useSettingsStore((state) => state.brandProfileLoaded);
   const loadBrandProfile = useSettingsStore((state) => state.loadBrandProfile);
+  const youtubeConfiguredLoaded = useSettingsStore((state) => state.youtubeConfiguredLoaded);
+  const loadYoutubeStatus = useSettingsStore((state) => state.loadYoutubeStatus);
 
   React.useEffect(() => {
     loadProviders();
     loadBrandProfile();
-  }, [loadProviders, loadBrandProfile]);
+    loadYoutubeStatus();
+  }, [loadProviders, loadBrandProfile, loadYoutubeStatus]);
 
   return (
     <main className="flex flex-1 justify-center px-4 py-10">
@@ -64,6 +68,27 @@ export default function SettingsPage() {
               <ToolsPanel providers={providers} />
             </div>
           ) : null}
+        </section>
+
+        <section className="mt-6 rounded-xl border border-border-muted bg-background-surface p-6 shadow-surface">
+          <div className="flex items-center gap-2.5">
+            <span className="flex size-8 items-center justify-center rounded-lg bg-background-accent-muted text-text-accent">
+              <Compass className="size-4" strokeWidth={2.25} aria-hidden="true" />
+            </span>
+            <h2 className="text-base font-semibold text-text-primary">Outliers research panel</h2>
+          </div>
+          <p className="mt-2 text-sm text-text-secondary">
+            Add a YouTube Data API key to search channels and browse Latest/Popular/Outliers from the canvas
+            toolbar. Get a free key from the Google Cloud Console (enable &ldquo;YouTube Data API v3&rdquo;) —
+            the free daily quota comfortably covers normal use.
+          </p>
+          {!youtubeConfiguredLoaded ? (
+            <p className="mt-4 text-sm text-text-muted">Loading…</p>
+          ) : (
+            <div className="mt-4 rounded-lg border border-border-muted px-4 py-1">
+              <YoutubeKeyField />
+            </div>
+          )}
         </section>
 
         <section className="mt-6 rounded-xl border border-border-muted bg-background-surface p-6 shadow-surface">

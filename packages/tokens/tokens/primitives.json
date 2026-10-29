@@ -16,6 +16,7 @@
       "950": { "$value": "#09090b", "$type": "color" }
     },
     "accent": {
+      "25":  { "$value": "#f5f7ff", "$type": "color" },
       "50":  { "$value": "#eef2ff", "$type": "color" },
       "100": { "$value": "#e0e7ff", "$type": "color" },
       "200": { "$value": "#c7d2fe", "$type": "color" },

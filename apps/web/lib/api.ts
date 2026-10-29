@@ -31,6 +31,12 @@ const UPLOAD_TIMEOUT_MS = 60_000;
 // every page load like `request()`'s 15s default), so it's fine for this to wait a
 // genuinely long time rather than abort a pipeline that's still legitimately working.
 const LONG_RUNNING_TIMEOUT_MS = 10 * 60_000;
+// Phase 6 (F-17/TF-10) — mindmap generation is one more plain chat completion (no
+// context assembly, no media pipeline that could run for minutes), so it gets its own,
+// much shorter generous budget rather than reusing the 10-minute one above — a real
+// LLM call that's still running after a minute is a genuinely different situation than
+// "yt-dlp is still downloading," and the error message below says so.
+const MINDMAP_TIMEOUT_MS = 60_000;
 
 function withTimeout(ms: number): { signal: AbortSignal; clear: () => void } {
   const controller = new AbortController();
@@ -142,6 +148,34 @@ export function extractRequest<T>(path: string): Promise<T> {
     { method: "POST" },
     LONG_RUNNING_TIMEOUT_MS,
     "This is taking a while — it may still be working in the background. The card will update on its own once it's done."
+  );
+}
+
+/**
+ * Phase 6 (F-12/F-20) — Manual Input's "assemble" step runs through the SAME
+ * `assembleContext` pipeline the Native/Local send path does, so a connected
+ * video/audio/link node that hasn't been transcribed yet can trigger the full
+ * yt-dlp -> ffmpeg -> whisper pipeline here too, on a plain JSON POST with no SSE
+ * stream to show progress through. Same generous budget as `extractRequest` for the
+ * same reason — this isn't on the hot path of every message the way `send()` is.
+ */
+export function manualAssembleRequest<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(
+    path,
+    { method: "POST", body: JSON.stringify(body) },
+    LONG_RUNNING_TIMEOUT_MS,
+    "This is taking a while — a connected video/audio/link may still be processing. Try again in a bit."
+  );
+}
+
+/** Phase 6 (F-17/TF-10) — mindmap generation's one-shot structuring call. See
+ * `MINDMAP_TIMEOUT_MS` above for why this is its own, shorter budget. */
+export function generateMindmapRequest<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(
+    path,
+    { method: "POST", body: JSON.stringify(body) },
+    MINDMAP_TIMEOUT_MS,
+    "Generating the mindmap is taking too long and timed out. Try again."
   );
 }
 

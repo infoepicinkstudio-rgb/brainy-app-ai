@@ -8,6 +8,7 @@ import {
   RIBBON_SOLID_CLASSES,
   RIBBON_RING_SELECTED_CLASSES,
   RIBBON_RING_HOVER_CLASSES,
+  ribbonSolidVar,
 } from "@/components/canvas/node-chrome";
 import { cn } from "@/lib/utils";
 
@@ -102,24 +103,29 @@ function GroupNodeImpl({ id, data, selected }: NodeProps) {
           (`translate(-50%, -50%)`, same geometry as the resize-handle's BUG-015), so
           roughly half its hit-area sits INSIDE the node, where the card below (next)
           would otherwise paint on top of it as a later DOM sibling at the default
-          stacking order and win the pointer events a drag needs to even start. */}
+          stacking order and win the pointer events a drag needs to even start.
+          Round 5, 4th follow-up (Istiyak: "Chevron is unnecessary. Node dots can be
+          smaller and outside the card"): the bracket decoration (and the
+          `useNodeConnections` check that gated it) is gone outright — see
+          node-chrome.tsx's matching comment. Same smaller size (18px → 13px, ring 3px →
+          2px) and larger outward offset (65/35 → 70/30) as that file's own pair too.
+          Kept as its own literal copy here rather than extracted into a shared
+          sub-component: this file already deliberately does NOT build on NodeChrome (see
+          this component's own top comment — its body is opaque/overflow-hidden, wrong
+          for a group), so there's no existing shared render path for a
+          connection-handle pair to live in without a larger restructure this round
+          doesn't ask for. */}
       <Handle
         type="target"
         position={Position.Left}
-        className={cn(
-          "!z-20 !size-3 !border-2 !border-background-surface opacity-50 transition-opacity duration-fast",
-          "group-hover:opacity-100",
-          RIBBON_SOLID_CLASSES[GROUP_ACCENT]
-        )}
+        style={{ transform: "translate(-70%, -50%)", borderColor: ribbonSolidVar(GROUP_ACCENT) }}
+        className="!z-20 !size-[13px] !border-2 !bg-background-surface !shadow-surface-raised"
       />
       <Handle
         type="source"
         position={Position.Right}
-        className={cn(
-          "!z-20 !size-3 !border-2 !border-background-surface opacity-50 transition-opacity duration-fast",
-          "group-hover:opacity-100",
-          RIBBON_SOLID_CLASSES[GROUP_ACCENT]
-        )}
+        style={{ transform: "translate(70%, -50%)", borderColor: ribbonSolidVar(GROUP_ACCENT) }}
+        className="!z-20 !size-[13px] !border-2 !bg-background-surface !shadow-surface-raised"
       />
 
       {/* Header — rendered directly on the OUTER wrapper's own solid fill (above), no
@@ -172,43 +178,36 @@ function GroupNodeImpl({ id, data, selected }: NodeProps) {
               </span>
             </span>
           )}
-          <span className="flex shrink-0 items-center gap-0.5">
-            {/* Duplication (Phase 3, F-07) — passing just the group's own id is enough:
-                board-store.ts's `duplicateSelection`/`buildCloneTemplate` auto-expands
-                any selected group id to include its current members, preserves internal
-                edges between them, and drops any edge reaching outside the group,
-                exactly the same rule a selection-based Ctrl+D or Ctrl+C/Ctrl+V on this
-                group would apply — this button just offers it without needing to select
-                anything first. */}
+          <span className="flex shrink-0 items-center gap-1">
+            {/* Round 2 #2 (Istiyak, reference screenshot: a floating pill toolbar with
+                icon + label + a small boxed shortcut key, e.g. "Fullscreen F"):
+                converted from a bare icon button into a labeled "badge" pill carrying
+                its own keyboard shortcut — Ctrl+D (page.tsx's `handleKeyDown`) for
+                Duplicate, Ctrl+Shift+G for Ungroup — so the shortcut is discoverable
+                right where the action lives, not just in the Keyboard Shortcuts dialog.
+                Light pill (`bg-background-surface`) rather than a plain icon, since this
+                header's own fill is dark (`RIBBON_SOLID_CLASSES`) — inverted contrast
+                of the reference's light-toolbar-on-light-canvas, same idea. Still
+                hover/focus-revealed only (`opacity-0 group-hover:opacity-100`), same
+                visibility rule as every other card's own menu affordance — these are
+                now more informative, not meant to be permanently on screen. */}
             <button
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
                 duplicateSelection([id]);
               }}
-              aria-label="Duplicate"
-              title="Duplicate"
-              // Round 6 (Istiyak, comparing a screenshot directly against the
-              // "Documents" card beside it: "Still not matching with the card style of
-              // other node cards"): the one real, objective difference between them —
-              // not an illusion — was that every content card's header is completely
-              // EMPTY on the right at rest (node-menu.tsx's 3-dot trigger is
-              // `opacity-0 group-hover:opacity-100`, invisible until you hover the
-              // card), while this button sat permanently at `opacity-70`, always
-              // visible. Now hidden at rest and revealed on hover/focus, exactly
-              // matching NodeMenu's own visibility pattern — hover:bg-white/15, not
-              // /10 black like a content card's dark-on-light menu button, since this
-              // header's own fill is dark and a light hover wash reads correctly here
-              // instead of vanishing against it.
-              className="nodrag shrink-0 rounded p-0.5 opacity-0 transition-opacity duration-fast hover:bg-white/15 group-hover:opacity-100 group-focus-within:opacity-100"
+              aria-label="Duplicate (Ctrl+D)"
+              className={cn(
+                "nodrag flex shrink-0 items-center gap-1 rounded-full bg-background-surface px-1.5 py-0.5 text-text-primary shadow-surface",
+                "opacity-0 transition-opacity duration-fast group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-background-muted"
+              )}
             >
-              {/* size-3.5, not size-3 (Istiyak: "header height... all to be match
-                  exact") — a content card's header row isn't actually sized by its
-                  text/label at all, it's sized by node-menu.tsx's own 3-dot trigger
-                  icon, the single tallest element in that row at 14px. This action
-                  cluster needed to match THAT icon's size, not the label's, for the
-                  two header rows to come out the same height. */}
-              <Copy className="size-3.5" aria-hidden="true" />
+              <Copy className="size-3" aria-hidden="true" />
+              <span className="text-[10px] font-medium leading-none">Duplicate</span>
+              <kbd className="rounded bg-background-muted px-1 py-px text-[9px] font-semibold leading-none text-text-secondary">
+                Ctrl+D
+              </kbd>
             </button>
             {/* Explicit, unambiguous ungroup affordance — same `ungroupNode` action the
                 Ctrl+Shift+G shortcut uses (page.tsx). The hover-delete "X" below ends up
@@ -223,11 +222,17 @@ function GroupNodeImpl({ id, data, selected }: NodeProps) {
                 event.stopPropagation();
                 ungroupNode(id);
               }}
-              aria-label="Ungroup"
-              title="Ungroup"
-              className="nodrag shrink-0 rounded p-0.5 opacity-0 transition-opacity duration-fast hover:bg-white/15 group-hover:opacity-100 group-focus-within:opacity-100"
+              aria-label="Ungroup (Ctrl+Shift+G)"
+              className={cn(
+                "nodrag flex shrink-0 items-center gap-1 rounded-full bg-background-surface px-1.5 py-0.5 text-text-primary shadow-surface",
+                "opacity-0 transition-opacity duration-fast group-hover:opacity-100 group-focus-within:opacity-100 hover:bg-background-muted"
+              )}
             >
-              <Ungroup className="size-3.5" aria-hidden="true" />
+              <Ungroup className="size-3" aria-hidden="true" />
+              <span className="text-[10px] font-medium leading-none">Ungroup</span>
+              <kbd className="rounded bg-background-muted px-1 py-px text-[9px] font-semibold leading-none text-text-secondary">
+                Ctrl+Shift+G
+              </kbd>
             </button>
           </span>
         </div>

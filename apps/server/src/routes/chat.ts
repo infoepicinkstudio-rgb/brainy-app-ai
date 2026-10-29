@@ -62,6 +62,81 @@ function writeSseEvent(reply: FastifyReply, data: unknown) {
   reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+// Manual Input's plain-text form of exactly what every adapter's own `buildMessages`
+// sends ahead of the user's prompt — claude.ts/openai.ts/ollama.ts independently
+// converged on the identical context/brand-profile/notes layering, so this is that
+// same layering once, for the ONE caller (manual-assemble, below) that needs the
+// plain-text shape rather than a provider's own message format.
+function buildAssembledPromptText(
+  context: { label: string; content: string }[],
+  brandProfile: string | undefined,
+  notesForAI: string | undefined,
+  prompt: string
+): string {
+  const parts: string[] = [];
+  if (context.length > 0) {
+    parts.push(
+      "The following content is connected to this conversation as reference context:\n\n" +
+        context.map((item) => `--- ${item.label} ---\n${item.content}`).join("\n\n")
+    );
+  }
+  if (brandProfile) parts.push(`Brand/Voice Profile (match this voice in your response):\n${brandProfile}`);
+  if (notesForAI) parts.push(`Additional instructions for this node:\n${notesForAI}`);
+  parts.push(prompt);
+  return parts.join("\n\n");
+}
+
+// Mindmap generation (F-17/TF-10, ADR-0101) ---------------------------------------
+// One more call to the SAME adapter/model already configured on the chat node
+// (Istiyak's own choice over a client-side heuristic parse) — reuses `streamChat`
+// exactly as the real send route does, just collecting every `text` chunk into one
+// string instead of forwarding it over SSE, since there's no live UI to stream into
+// for a one-shot structuring call.
+interface MindmapTreeNode {
+  label: string;
+  children?: MindmapTreeNode[];
+}
+interface MindmapResult {
+  topic: string;
+  children: MindmapTreeNode[];
+}
+
+const MINDMAP_SYSTEM_PROMPT = `You turn a piece of writing into a mindmap. Read the content below and restructure it as a short hierarchical outline: one central topic, a handful of main branches, and (only where it genuinely helps) one level of sub-branches under those. Keep every label short — a few words, not a sentence. Reply with ONLY valid JSON, no commentary, no markdown code fence, matching exactly this shape:
+{"topic": "string", "children": [{"label": "string", "children": [{"label": "string"}]}]}
+"children" arrays may be empty or omitted on leaf nodes. If the content below is too short, too thin, or too unstructured to meaningfully break into branches (e.g. a one-line answer, or a refusal), reply with exactly this JSON instead: {"error": "not enough structure to map"}`;
+
+/** Strips a markdown code fence around the JSON, when a model wraps its output in one
+ * despite being told not to (a common enough quirk across providers that handling it
+ * here is cheaper than a second round-trip asking the model to retry without one). */
+function stripCodeFence(text: string): string {
+  const trimmed = text.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed);
+  return fenced ? fenced[1].trim() : trimmed;
+}
+
+/** Validates the parsed JSON actually matches MindmapResult's shape (not just "is an
+ * object") before this is ever trusted as something to render a tree from — a model
+ * that returns well-formed but wrong-shaped JSON (e.g. a flat array, or the wrong key
+ * names) should hit the same "couldn't structure this" error path as genuinely broken
+ * JSON, not a runtime crash three layers away in the frontend's tree renderer. */
+function isValidMindmapTree(value: unknown): value is MindmapTreeNode {
+  if (typeof value !== "object" || value === null) return false;
+  const node = value as Record<string, unknown>;
+  if (typeof node.label !== "string" || !node.label.trim()) return false;
+  if (node.children === undefined) return true;
+  return Array.isArray(node.children) && node.children.every(isValidMindmapTree);
+}
+function isValidMindmapResult(value: unknown): value is MindmapResult {
+  if (typeof value !== "object" || value === null) return false;
+  const result = value as Record<string, unknown>;
+  return (
+    typeof result.topic === "string" &&
+    Boolean(result.topic.trim()) &&
+    Array.isArray(result.children) &&
+    result.children.every(isValidMindmapTree)
+  );
+}
+
 export async function chatRoutes(app: FastifyInstance) {
   // Sessions -----------------------------------------------------------------
 
@@ -192,6 +267,170 @@ export async function chatRoutes(app: FastifyInstance) {
     };
   });
 
+  // Manual Input bridge (F-12/F-20, Phase 6) ------------------------------------
+  //
+  // Not an execution mode that calls any provider — a copy/paste convenience for
+  // when Istiyak wants to use a chat tool he already pays for elsewhere (claude.ai,
+  // ChatGPT, etc.) instead of spending Native API budget or needing Local LLM
+  // running. Two plain JSON endpoints, no SSE: (1) assemble the exact text he'd
+  // paste there, (2) save what he pastes back as an ordinary turn.
+
+  app.post<{ Params: { boardId: string; nodeId: string }; Body: { prompt?: string } }>(
+    "/api/boards/:boardId/nodes/:nodeId/manual-assemble",
+    async (request, reply) => {
+      const prompt = request.body?.prompt?.trim();
+      if (!prompt) return reply.code(400).send({ error: "A prompt is required." });
+
+      const [node] = await db.select().from(nodes).where(eq(nodes.id, request.params.nodeId));
+      if (!node || node.type !== "chat") return reply.code(404).send({ error: "Chat node not found." });
+
+      // Same `assembleContext` every other execution mode calls (a connected
+      // video/audio/link node still extracts on a cache miss here) — no
+      // `onExtracting` callback, since there's no open SSE stream to push progress
+      // into; this plain POST just takes as long as a cold extraction takes.
+      const { context, notesForAI, brandProfile } = await assembleContext(node);
+      return { assembledPrompt: buildAssembledPromptText(context, brandProfile, notesForAI, prompt) };
+    }
+  );
+
+  app.post<{
+    Params: { boardId: string; nodeId: string };
+    Body: { prompt?: string; response?: string; sessionId?: string };
+  }>("/api/boards/:boardId/nodes/:nodeId/manual-turn", async (request, reply) => {
+    const { nodeId } = request.params;
+    const prompt = request.body?.prompt?.trim();
+    const response = request.body?.response?.trim();
+    if (!prompt) return reply.code(400).send({ error: "A prompt is required." });
+    if (!response) return reply.code(400).send({ error: "Paste the response you got back before saving." });
+
+    const [node] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+    if (!node || node.type !== "chat") return reply.code(404).send({ error: "Chat node not found." });
+
+    // Same session-resolution shape as the real send route below — a session id
+    // that no longer exists fails the same way there, too.
+    const requestedSessionId = request.body?.sessionId;
+    const isLegacySession = !requestedSessionId || requestedSessionId === LEGACY_SESSION_ID;
+    let sessionRow: { id: string; title: string | null } | null = null;
+    if (!isLegacySession) {
+      const [found] = await db.select().from(chat_sessions).where(eq(chat_sessions.id, requestedSessionId));
+      if (!found || found.node_id !== nodeId) {
+        return reply.code(404).send({ error: "That conversation no longer exists — start a new one." });
+      }
+      sessionRow = found;
+    }
+    const sessionIdForRows = sessionRow?.id ?? null;
+
+    const priorMessages = await db
+      .select()
+      .from(chat_messages)
+      .where(
+        and(
+          eq(chat_messages.node_id, nodeId),
+          isLegacySession ? isNull(chat_messages.session_id) : eq(chat_messages.session_id, sessionIdForRows!)
+        )
+      );
+
+    // Saved as an ordinary user/assistant pair — provider/model/tokens_used/
+    // estimated_cost all left null, same as Local LLM's own messages (F-29: "Local
+    // LLM / Manual Input messages: Never counted"), since no metered call happened.
+    const [userMessage] = await db
+      .insert(chat_messages)
+      .values({ node_id: nodeId, session_id: sessionIdForRows, role: "user", content: prompt })
+      .returning();
+    const [assistantMessage] = await db
+      .insert(chat_messages)
+      .values({ node_id: nodeId, session_id: sessionIdForRows, role: "assistant", content: response })
+      .returning();
+
+    if (sessionRow) {
+      const isFirstMessage = priorMessages.length === 0;
+      await db
+        .update(chat_sessions)
+        .set({
+          updated_at: new Date().toISOString(),
+          ...(isFirstMessage && !sessionRow.title
+            ? { title: prompt.length > 48 ? `${prompt.slice(0, 48)}…` : prompt }
+            : {}),
+        })
+        .where(eq(chat_sessions.id, sessionRow.id));
+    }
+
+    return { userMessage, assistantMessage };
+  });
+
+  // Mindmap generation (F-17/TF-10, ADR-0101) — plain JSON, not SSE: this is a single
+  // one-shot structuring call, not a conversation turn, and nothing here is persisted
+  // to chat_messages (the mindmap becomes its OWN node, board-store.ts's
+  // addMindmapNode, not another row in this node's own history).
+  app.post<{ Params: { boardId: string; nodeId: string }; Body: { content?: string } }>(
+    "/api/boards/:boardId/nodes/:nodeId/generate-mindmap",
+    async (request, reply) => {
+      const content = request.body?.content?.trim();
+      if (!content) return reply.code(400).send({ error: "Nothing to generate a mindmap from." });
+
+      const [node] = await db.select().from(nodes).where(eq(nodes.id, request.params.nodeId));
+      if (!node || node.type !== "chat") return reply.code(404).send({ error: "Chat node not found." });
+
+      const chatData = (node.data && typeof node.data === "object" ? node.data : {}) as ChatNodeData;
+      const provider = isProviderId(chatData.provider) ? chatData.provider : "claude";
+      const model = chatData.model;
+      const executionMode = chatData.executionMode ?? "native";
+      if (!model) return reply.code(400).send({ error: "This chat node has no model selected." });
+      // Manual Input has no model to call at all (no key, no local server — it's a
+      // copy/paste bridge to an external tool) — there's no adapter this could even
+      // dispatch to, so this is blocked outright rather than guessing a provider.
+      if (executionMode === "manual") {
+        return reply.code(400).send({
+          error: "Generate mindmap isn't available in Manual Input mode — switch this node to Native API or Local LLM first.",
+        });
+      }
+
+      const adapter = executionMode === "local" ? ollamaAdapter : getAdapter(provider);
+      if (!(await adapter.isConfigured())) {
+        return reply.code(400).send({
+          error:
+            executionMode === "local"
+              ? "Ollama isn't reachable — install it from ollama.com, run `ollama pull <model>`, and make sure it's running, then try again."
+              : `No ${provider[0].toUpperCase()}${provider.slice(1)} API key saved — add one in Settings.`,
+        });
+      }
+
+      let fullText = "";
+      let streamError: string | undefined;
+      try {
+        for await (const chunk of adapter.streamChat({
+          model,
+          prompt: `${MINDMAP_SYSTEM_PROMPT}\n\n---\n\n${content}`,
+          history: [],
+          context: [],
+        })) {
+          if (chunk.type === "text") fullText += chunk.text;
+          else if (chunk.type === "error") streamError = chunk.message;
+        }
+      } catch (err) {
+        app.log.error(err);
+        streamError = "Something went wrong talking to the provider. Check the server log for details.";
+      }
+      if (streamError) return reply.code(502).send({ error: streamError });
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(stripCodeFence(fullText));
+      } catch {
+        return reply.code(422).send({ error: "Couldn't structure this response into a mindmap — try regenerating." });
+      }
+      if (parsed && typeof parsed === "object" && "error" in parsed) {
+        return reply
+          .code(422)
+          .send({ error: "This response is too short or unstructured to turn into a mindmap — try a longer, more detailed response." });
+      }
+      if (!isValidMindmapResult(parsed)) {
+        return reply.code(422).send({ error: "Couldn't structure this response into a mindmap — try regenerating." });
+      }
+      return { topic: parsed.topic, children: parsed.children };
+    }
+  );
+
   // Send + stream ----------------------------------------------------------------
 
   app.post<{
@@ -306,10 +545,20 @@ export async function chatRoutes(app: FastifyInstance) {
       directImages.push({ mediaType: att.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", base64: buffer.toString("base64") });
     }
 
+    // Round 1 bug #4 (Istiyak: "User should be able to stop response in between...
+    // Currently button is in processing mode so can't cancel the response in
+    // between") — the client-side half (chat-node.tsx's composer button) closes the
+    // connection when Stop is clicked; THIS is what actually reacts to that. Before,
+    // "close" did nothing but a comment saying there was nothing to do — the provider
+    // call kept running and burning tokens/time against a reply nobody was listening
+    // for anymore, the stream loop below just kept writing to a dead socket. Now it
+    // aborts the in-flight provider call (every adapter forwards this signal into its
+    // own `fetch`) and flags the loop below to stop pulling further chunks.
+    let clientDisconnected = false;
+    const providerAbort = new AbortController();
     request.raw.on("close", () => {
-      // Client navigated away / closed the tab mid-stream — nothing further to write.
-      // Fastify/Node handle the underlying socket teardown; this just stops the loop
-      // below from doing pointless work against a dead connection.
+      clientDisconnected = true;
+      providerAbort.abort();
     });
 
     // Hijacked BEFORE `assembleContext` now (Phase 5, ADR-0044/ADR-0085..0087) — a
@@ -374,7 +623,9 @@ export async function chatRoutes(app: FastifyInstance) {
         images: images.length > 0 ? images : undefined,
         webSearchEnabled,
         thinkingEnabled,
+        signal: providerAbort.signal,
       })) {
+        if (clientDisconnected) break; // Stop clicked — nothing left to write to
         if (chunk.type === "text") {
           fullText += chunk.text;
           writeSseEvent(reply, { type: "text", text: chunk.text });
@@ -389,8 +640,35 @@ export async function chatRoutes(app: FastifyInstance) {
         }
       }
     } catch (err) {
-      app.log.error(err);
-      streamError = "Something went wrong talking to the provider. Check the server log for details.";
+      // An aborted fetch throws/yields here same as a real provider failure would —
+      // only log and surface it as one when the CLIENT didn't ask for this (a real
+      // "something went wrong" belongs in the log; a user clicking Stop does not).
+      if (!clientDisconnected) {
+        app.log.error(err);
+        streamError = "Something went wrong talking to the provider. Check the server log for details.";
+      }
+    }
+
+    if (clientDisconnected) {
+      // Save whatever was generated before the stop, mirroring the chat-node.tsx
+      // composer's own optimistic local save — so a stopped reply survives a reload
+      // instead of silently vanishing, same as a reply that finished normally. No SSE
+      // write and no `reply.raw.end()`: the connection that would receive either is
+      // already gone.
+      if (fullText) {
+        await db.insert(chat_messages).values({
+          node_id: nodeId,
+          session_id: sessionIdForRows,
+          role: "assistant",
+          content: fullText,
+          provider,
+          model,
+        });
+        if (sessionRow) {
+          await db.update(chat_sessions).set({ updated_at: new Date().toISOString() }).where(eq(chat_sessions.id, sessionRow.id));
+        }
+      }
+      return;
     }
 
     if (streamError) {

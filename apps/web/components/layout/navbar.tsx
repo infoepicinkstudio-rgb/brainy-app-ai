@@ -58,7 +58,22 @@ export function Navbar() {
   if (!profile || !sessionActive) return null;
 
   return (
-    <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between gap-4 border-b border-border-muted bg-background-surface px-5 shadow-nav">
+    // Round 1 bug #7 (Istiyak: profile menu's dropdown was hiding BEHIND the Outliers
+    // panel, the reverse of how the bug list first described it). Root cause: this
+    // header and the Outliers panel (outliers-panel.tsx) both used z-20, and the
+    // header's own position:sticky + z-index make it a stacking context of its own —
+    // so the profile dropdown's z-10 (profile-menu.tsx) only ever competes against
+    // its OWN header siblings, never directly against the Outliers panel. With the
+    // header and the panel tied at z-20, the tie is broken by DOM order, and the
+    // Outliers panel (rendered later, inside <main>, per app/layout.tsx's
+    // <body><Navbar/>{children}</body> structure) wins — dragging the whole header,
+    // dropdown included, underneath it. Bumped to z-30, decisively above every other
+    // z-index in this app (z-20 is the next highest, on the Outliers panel and
+    // group-node's own handle overrides) so the navbar — global chrome, including
+    // whatever's open inside it — always sits above any in-page panel. The native
+    // <dialog>-based modals (ui/dialog.tsx) are unaffected either way: the browser's
+    // top layer always renders above this regardless of z-index.
+    <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center justify-between gap-4 border-b border-border-muted bg-background-surface px-5 shadow-nav">
       {/* usePathname() (in NavbarBrand below) is a dynamic client hook — next.config.ts's
           cacheComponents option requires a Suspense boundary around anything that reads
           it, same reasoning as the per-route Suspense wrappers around useParams()/
