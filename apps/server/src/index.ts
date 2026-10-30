@@ -16,6 +16,8 @@ import "dotenv/config";
 import Fastify, { type FastifyError } from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
+import pino from "pino";
+import path from "node:path";
 import { profileRoutes } from "./routes/profile.js";
 import { providerCredentialsRoutes } from "./routes/provider-credentials.js";
 import { brandProfileRoutes } from "./routes/brand-profile.js";
@@ -30,7 +32,31 @@ import { outliersRoutes } from "./routes/outliers.js";
 const PORT = Number(process.env.PORT ?? 4000);
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN ?? "http://localhost:3000";
 
-const app = Fastify({ logger: true });
+// Phase 7 (ADR-0034's open item, implementation_plan.md checklist item 4,
+// error-handling-conventions.md: "Backend errors are logged to a file, not just
+// console") — `logger: true` alone (the previous setup) hands Fastify a bare pino
+// instance that writes to stdout only: fine while a terminal happens to be open and
+// watched, useless the moment it's closed or scrolled past, which is exactly the
+// "inspectable after the fact" case this rule is for. `pino.multistream` fans every
+// log line out to BOTH stdout (so `npm run dev`'s live output is unchanged) and a real
+// file on disk — one pino instance, one set of `app.log`/`request.log` calls already
+// used everywhere in the codebase, no call-site changes needed anywhere else.
+//
+// `pino.destination({ mkdir: true })` is pino's own documented way to create the log
+// directory on first run if it doesn't exist yet — confirmed by actually exercising it
+// (a plain `pino.destination(path)` with no existing directory throws ENOENT
+// asynchronously, which with no error listener would crash the process on first boot;
+// `mkdir: true` avoids that entirely rather than needing a manual fs.mkdirSync first).
+// `*.log` is already in .gitignore (matches at any depth, no new entry needed) so this
+// never risks landing in git. No rotation — a single-user local dev server that
+// restarts often; revisit if `server.log` ever grows large enough to matter.
+const LOG_FILE = path.resolve(import.meta.dirname, "../logs/server.log");
+const logger = pino(
+  { level: process.env.LOG_LEVEL ?? "info" },
+  pino.multistream([{ stream: process.stdout }, { stream: pino.destination({ dest: LOG_FILE, mkdir: true, sync: false }) }])
+);
+
+const app = Fastify({ loggerInstance: logger });
 
 // Flagged as a gap after Phase 1 (error-handling-conventions.md: "Never surface a raw
 // stack trace or exception message to the UI") — an uncaught route error previously had
@@ -93,8 +119,16 @@ await app.register(chatRoutes);
 await app.register(youtubeCredentialsRoutes);
 await app.register(outliersRoutes);
 
+// Phase 7 (ADR-0034's open item, implementation_plan.md checklist item 3) — bound to
+// the literal loopback IP, not the hostname "localhost". Fastify/Node resolve
+// "localhost" via DNS/hosts-file lookup before binding, which on a normal Windows
+// install resolves to 127.0.0.1 (and ::1) anyway — but that resolution step is one
+// more thing that could theoretically be wrong (a tampered hosts file, an unusual
+// resolver config) for no benefit here. Binding the IP directly removes that step
+// entirely: there's no resolution to get wrong, and it matches exactly what the
+// checklist asks to confirm.
 try {
-  await app.listen({ port: PORT, host: "localhost" });
+  await app.listen({ port: PORT, host: "127.0.0.1" });
 } catch (err) {
   app.log.error(err);
   process.exit(1);

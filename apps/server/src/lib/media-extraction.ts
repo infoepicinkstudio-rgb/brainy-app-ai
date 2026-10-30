@@ -211,8 +211,16 @@ async function downloadAudioFromUrl(url: string, workDir: string, entry: ActiveE
   // checklist: "yt-dlp integration (audio pull)" then "ffmpeg normalization step" as
   // separate items) rather than leaning on yt-dlp's own `--audio-format` postprocessor,
   // for full control over the exact flags whisper needs.
+  //
+  // Phase 7 (ADR-0034's open item, implementation_plan.md checklist item 2) — `url` is
+  // guaranteed by `mediaSourceFor` below to have already passed `isHttpUrl`, so this is
+  // never a raw unchecked string by the time it gets here; the `--` just before it is
+  // belt-and-suspenders, the conventional "end of options" marker so yt-dlp's own arg
+  // parser can never mistake this positional for a flag even in principle. Not
+  // independently verified against a live yt-dlp run in this session (no shell access
+  // here) — worth confirming on a real extraction that this doesn't change behavior.
   const outputTemplate = path.join(workDir, "source.%(ext)s");
-  await run(YTDLP_PATH, ["-f", "bestaudio/best", "--no-playlist", "-o", outputTemplate, url], entry);
+  await run(YTDLP_PATH, ["-f", "bestaudio/best", "--no-playlist", "-o", outputTemplate, "--", url], entry);
   const files = await readdir(workDir);
   const downloaded = files.find((f) => f.startsWith("source."));
   if (!downloaded) throw new Error("yt-dlp reported success but produced no output file");
@@ -273,6 +281,29 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+// Phase 7 (ADR-0034's open item, implementation_plan.md checklist item 2) — `data.url`
+// is free-form JSON from the client (routes/nodes.ts does no shape validation on
+// `data` at all), but it ends up as a trailing positional argument to yt-dlp inside
+// `downloadAudioFromUrl` above. yt-dlp's own arg parser can treat a positional starting
+// with "-" as another flag rather than a URL (e.g. a stored value like
+// "--exec=someCommand" trying to abuse yt-dlp's post-download hook) — a documented
+// class of risk for anything that hands attacker-controlled strings to yt-dlp as a bare
+// positional. Requiring a successful `new URL()` parse with an http(s) protocol closes
+// this: a valid http(s) URL can never start with "-", so this single gate satisfies the
+// checklist's "URL-shape validation" item and rules out the argument-injection vector
+// at the same time. This is the ONE place `data.url` is read before a MediaSource gets
+// built, so every caller (downloadAudioFromUrl, sourceKeyFor indirectly via mediaSourceFor)
+// benefits without needing its own copy of this check.
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 // source_key convention (matches extraction_cache's existing doc comment: "a source URL
 // *or* a file-content hash"): a URL-sourced node (video url-source, or any link node,
 // ADR-0087) keys on its URL; an upload-sourced node (video upload-source ADR-0086, or
@@ -299,7 +330,7 @@ function mediaSourceFor(node: typeof nodes.$inferSelect): MediaSource | null {
     return absPath ? { kind: "upload", absPath } : null;
   }
   if (node.type === "video" || node.type === "link") {
-    return typeof data.url === "string" ? { kind: "url", url: data.url } : null;
+    return isHttpUrl(data.url) ? { kind: "url", url: data.url } : null;
   }
   if (node.type === "audio") {
     const absPath = typeof data.storedName === "string" ? resolveStoredFile(data.storedName) : null;
@@ -370,12 +401,12 @@ export async function hasCachedTranscript(node: typeof nodes.$inferSelect): Prom
  * reload.
  *
  * Never throws — every failure mode (private/region-locked/unsupported video, a corrupt
- * upload, a missing yt-dlp/ffmpeg binary, no GGML model file, or — for a link node whose
- * media attempt AND article scrape both failed — an unreachable page, a non-HTML
- * response, or a page whose real content needs JS/a login the scrape can't do anything
- * with) collapses to `status: "failed"` (F-14: "chat node shows a clear failure
- * state... conversation can continue without that node's deep content"), never a 500
- * that blocks the rest of the chat turn.
+ * upload, a missing yt-dlp/ffmpeg binary, no GGML model file, an invalid/non-http(s)
+ * URL (Phase 7), or — for a link node whose media attempt AND article scrape both
+ * failed — an unreachable page, a non-HTML response, or a page whose real content needs
+ * JS/a login the scrape can't do anything with) collapses to `status: "failed"` (F-14:
+ * "chat node shows a clear failure state... conversation can continue without that
+ * node's deep content"), never a 500 that blocks the rest of the chat turn.
  */
 export async function extractMediaForNode(
   node: typeof nodes.$inferSelect,

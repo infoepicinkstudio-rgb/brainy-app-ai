@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Phase 7 — CORS check</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; line-height: 1.5; color: #222; }
+  h1 { font-size: 20px; }
+  #verdict { font-size: 22px; font-weight: bold; padding: 16px; border-radius: 8px; margin: 20px 0; }
+  .pass { background: #d7f5dc; color: #116329; }
+  .fail { background: #ffd7d7; color: #8b1a1a; }
+  .pending { background: #eee; color: #555; }
+  code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; }
+  .detail { font-size: 14px; color: #555; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <h1>Phase 7 security check: cross-origin request test</h1>
+  <p>This page is deliberately NOT part of the Brainy app itself — opening it this way (double-clicked from a folder, or via <code>file://</code>) makes your browser treat it as a completely different site, so it can test whether Brainy's server correctly refuses requests from somewhere other than itself.</p>
+
+  <div id="verdict" class="pending">Checking…</div>
+  <div class="detail" id="detail"></div>
+
+  <p style="margin-top:30px; font-size:14px; color:#555;">
+    <strong>Before trusting a PASS here:</strong> open
+    <a href="http://127.0.0.1:4000/health" target="_blank">http://127.0.0.1:4000/health</a>
+    in another tab first. If that shows text starting with <code>{"status":"ok"...}</code>, the server
+    is definitely running, and the result below is meaningful. If that tab fails to load too, the server
+    just isn't running right now — start it with <code>npm run dev</code> and reload this page.
+  </p>
+
+  <script>
+    const verdict = document.getElementById("verdict");
+    const detail = document.getElementById("detail");
+
+    fetch("http://127.0.0.1:4000/health")
+      .then(async (res) => {
+        const text = await res.text();
+        verdict.textContent = "⚠️ NOT BLOCKED — this page's request reached the server.";
+        verdict.className = "fail";
+        detail.textContent = "The server responded:\n" + text +
+          "\n\nThis means a page from somewhere other than the real app could read Brainy's server responses. Report this back as-is.";
+      })
+      .catch((err) => {
+        verdict.textContent = "✅ BLOCKED — the browser refused to let this page read the server's response.";
+        verdict.className = "pass";
+        detail.textContent = "Error the browser gave (this is expected and good):\n" + err +
+          "\n\nThis is what CORS protection is supposed to do: the server may have still " +
+          "received the request, but your browser would not let this unrelated page read what it said back.";
+      });
+  </script>
+</body>
+</html>

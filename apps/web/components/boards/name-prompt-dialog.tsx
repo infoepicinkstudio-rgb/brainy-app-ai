@@ -44,6 +44,22 @@ export function NamePromptDialog({
   }
 
   async function handleConfirm() {
+    // Phase 7 (ADR-0034's open item, implementation_plan.md checklist item 4,
+    // error-handling-conventions.md: "Cost-incurring or data-mutating actions...
+    // disable their control for the duration of the in-flight request — no
+    // double-submits") — the Save/Create button's own `disabled={isSaving}` below
+    // only guards the mouse-click path. The Input's onKeyDown below calls this same
+    // function directly on every Enter keydown, completely bypassing that button —
+    // a fast double-press, or a held key's OS key-repeat, fires this before the
+    // first call's `setIsSaving(true)` has been committed and re-rendered, so BOTH
+    // calls see `isSaving === false` and both proceed to call `onConfirm` (e.g. New
+    // board's handler in app/brainboards/(list)/all/page.tsx), creating two boards
+    // from one rapid Enter. Verified as a real race (not just theoretical) by
+    // simulating this exact call pattern — two back-to-back calls before either
+    // await resolves — which fires the mock onConfirm twice without this guard and
+    // once with it. This one-line check at the top closes it for every caller, both
+    // the keyboard and mouse paths, without needing a second copy of the guard.
+    if (isSaving) return;
     const trimmed = value.trim();
     if (!trimmed) return;
     setIsSaving(true);
