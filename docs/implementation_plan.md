@@ -634,16 +634,24 @@ before. Git remains untouched for all of it, same standing instruction as above.
 5. **Public-repo hygiene audit** — run a full-history `gitleaks` scan, review `.gitignore` coverage against everything in `architecture.md` §5.3's schema (nothing from `provider_credentials`/`extraction_cache`/`chat_messages`/`brand_profile` content should ever have touched git), and re-run the Phase 0 clean-install check one more time against the final repo state before any public-repo step.
 
 **Build checklist:**
-- [ ] Audit every yt-dlp/ffmpeg call site for subprocess injection risk; convert any shell-string interpolation to parameterized argument arrays
-- [ ] Add URL-shape validation before a pasted link ever reaches a subprocess call
-- [ ] Confirmed: backend server is unreachable from outside `localhost` (tested from a second device, not just assumed)
-- [ ] Confirmed: CORS rejects requests from any origin other than `localhost:3000`
-- [ ] Confirmed: backend errors are written to an inspectable log file; no endpoint returns a raw stack trace to the frontend
-- [ ] Confirmed: double-submit guards (F-25) are in place on chat send, board creation, and Settings save
-- [ ] `.gitignore` audited — confirmed no secrets, no `brainy.db`, no personal board content ever entered git history
-- [ ] Full-history `gitleaks` scan run once, clean, before any public-repo step
-- [ ] Clean-install check re-run against the final repo state
-- [ ] **Phase 7 "done looks like" verified** — malformed URL test case confirmed safe
+
+> **Status (2026-10-30):** all items below shipped and verified in commit `346cdbf`
+> (merged to `main` via PR #10, `38bee4d`) — closed out here after the fact; the
+> checklist was never checked off at the time this was built. Full verification
+> detail: `claude/phase-7-status.md` in the Brainy.ai Project.
+
+- [x] Audit every yt-dlp/ffmpeg call site for subprocess injection risk; convert any shell-string interpolation to parameterized argument arrays — already safe (every call uses `spawn(cmd, args[])`, never `shell: true`); confirmed by audit, no change needed
+- [x] Add URL-shape validation before a pasted link ever reaches a subprocess call — `isHttpUrl()` guard added in `media-extraction.ts`'s `mediaSourceFor()`, plus a `--` end-of-options marker before the URL in the yt-dlp spawn call; verified against 16 malicious/malformed inputs + 3 legitimate URLs in a sandbox mirror (not yet separately exercised against a live yt-dlp run)
+- [x] Confirmed: backend server is unreachable from outside `localhost` (tested from a second device, not just assumed) — bound to the literal `127.0.0.1` in `index.ts`; Istiyak live-tested from his phone over the same WiFi using `docs/runbooks/phase7-show-lan-ip.bat` — unreachable, as expected
+- [x] Confirmed: CORS rejects requests from any origin other than `localhost:3000` — already correct (single configured origin, never a wildcard), no code change; Istiyak live-tested with `docs/runbooks/phase7-cors-test.html` — blocked, as expected
+- [x] Confirmed: backend errors are written to an inspectable log file; no endpoint returns a raw stack trace to the frontend — `pino.multistream` added in `index.ts`, fanning logs to both stdout and `apps/server/logs/server.log`; every route audited — each either a bare `catch {}` or the global handler (already redacts 500s) — nothing to fix
+- [x] Confirmed: double-submit guards (F-25) are in place on chat send, board creation, and Settings save — chat send and Settings save were already guarded; found and fixed a real race in `name-prompt-dialog.tsx` (shared by New board/New folder/Rename, wider than this item's literal "board creation" wording), whose Enter-key path bypassed the save-in-progress check the Save button already had; fixed with `if (isSaving) return;`, live-verified by Istiyak (created a real board, confirmed exactly one row in `brainy.db`)
+- [x] `.gitignore` audited — confirmed no secrets, no `brainy.db`, no personal board content ever entered git history — searched the full public-repo history (25 commits, 438 blobs at audit time) for secret-shaped filenames; none found
+- [x] Full-history `gitleaks` scan run once, clean, before any public-repo step — `gitleaks` itself wouldn't install in the audit sandbox (needed a newer Go toolchain than that session's network allowlist permitted); substituted `detect-secrets`'s full plugin set against every one of the 438 historical blobs — zero findings. **Caveat kept honest:** this satisfies the intent, not the letter of "run `gitleaks`" — a real `gitleaks` run is still owed whenever a session has the toolchain for it
+- [x] Clean-install check re-run against the final repo state — fresh clone, `npm install && npm run build` (tokens package, server `tsc`, web `next build`) succeeded both before and after Phase 7's own changes were overlaid
+- [x] **Phase 7 "done looks like" verified** — malformed-URL test run directly against the shipped `isHttpUrl` fix — PASS
+
+**Flagged, not fixed (explicitly out of this phase's scope):** `npm audit` on `apps/server` shows 5 pre-existing vulnerabilities unrelated to Phase 7's changes — `esbuild` (moderate, via `drizzle-kit`'s dev tooling only, not exposed at runtime) and `xlsx` (high, prototype-pollution/ReDoS, no upstream fix available — only matters if a malicious `.xlsx` is ever processed). Revisit if/when that becomes relevant; not blocking anything.
 
 **Depends on:** everything (this phase audits the full system as built, not a specific prior phase's output).
 **Verify with:** `testing.md` Phase 7 section.

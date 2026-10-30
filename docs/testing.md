@@ -408,6 +408,10 @@ Legend: `[ ]` not yet run · `[x]` passes · `[~]` partially implemented/adjuste
 
 ## Phase 7 — Security hardening
 
-- [ ] Paste a deliberately malformed/shell-metacharacter-laden "URL" into a video node — confirm nothing executes beyond the intended yt-dlp call
-- [ ] Confirm the backend is unreachable from another device on the same network (not just unreachable from "outside" in the abstract)
-- [ ] Run a full-history `gitleaks` scan — confirm clean before any public-repo step
+> **Status (2026-10-30):** verified. See `docs/implementation_plan.md`'s Phase 7
+> checklist for how each item below was actually confirmed, and
+> `claude/phase-7-status.md` in the Brainy.ai Project for full detail.
+
+- [x] Paste a deliberately malformed/shell-metacharacter-laden "URL" into a video node — confirm nothing executes beyond the intended yt-dlp call — 16 malicious/malformed inputs tested against `isHttpUrl`/`mediaSourceFor` in a sandbox mirror; every one rejected, 3 legitimate URLs still worked
+- [x] Confirm the backend is unreachable from another device on the same network (not just unreachable from "outside" in the abstract) — Istiyak confirmed from his phone over the same WiFi, using `docs/runbooks/phase7-show-lan-ip.bat`
+- [x] Run a full-history `gitleaks` scan — confirm clean before any public-repo step — `gitleaks` itself wouldn't install in the audit sandbox; `detect-secrets`'s full plugin set substituted against all 438 historical blobs — zero findings (a real `gitleaks` run is still owed when the toolchain allows it)

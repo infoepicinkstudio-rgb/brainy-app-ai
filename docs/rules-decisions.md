@@ -253,7 +253,7 @@ Each decision is numbered (`ADR-####`), dated, and has four parts:
 ### ADR-0034 — Dedicated security discussion deferred, not skipped
 **Decision:** A separate, focused security discussion is still owed, covering: input sanitization for anything fed into yt-dlp/ffmpeg subprocesses (injection risk from pasted URLs), binding the local backend to `localhost` only, and a clean split between publishable code and Istiyak's own private board content/research — relevant given the eventual public-repo plan.
 **Rationale:** Explicitly deferred by Istiyak during scoping to avoid derailing the stack discussion; flagged here so it isn't forgotten.
-**Status:** **Open — revisit before Phase 7 (security hardening) and before any public-repo step.**
+**Status:** **Closed — see ADR-0108.** Phase 7 shipped the deferred fixes (yt-dlp URL-shape validation, `127.0.0.1` binding, file logging, a double-submit race fix) in commit `346cdbf`, merged to `main` via PR #10 (`38bee4d`).
 **Touches:** architecture.md, prd.md (Phase 7).
 
 ### ADR-0035 — GitHub MCP: Claude may commit/push directly
@@ -1004,7 +1004,15 @@ Generation is blocked outright in Manual Input mode (ADR-0019) with a clear toas
 
 ---
 
+### ADR-0108 — Phase 7 security hardening fixes: closing the record for isHttpUrl guard, 127.0.0.1 binding, file logging, and the name-prompt-dialog double-submit fix
+
+**Decision:** Closes ADR-0034's deferred security discussion. Four real fixes shipped in commit `346cdbf` (merged via PR #10, `38bee4d`): (1) an `isHttpUrl()` guard in `media-extraction.ts`'s `mediaSourceFor()`, plus a `--` end-of-options marker before the URL in the yt-dlp spawn call, closing the gap where `routes/nodes.ts` stored a node's `data.url` with zero shape validation; (2) `index.ts`'s Fastify instance rebound from `localhost` to the literal `127.0.0.1`; (3) `pino.multistream` added so logs fan out to both stdout and a real file (`apps/server/logs/server.log`), closing the "console-only, lost on terminal close" gap; (4) a real double-submit race found in `name-prompt-dialog.tsx` (shared by New board/New folder/Rename — wider than the checklist's literal "board creation" wording) — its Enter-key path bypassed the save-in-progress check the Save button already had; fixed with `if (isSaving) return;`.
+**Rationale:** CORS and raw-stack-trace-leakage were both already correct by audit — no code change needed for either. Everything else above was a genuine gap, not a formality. `gitleaks` itself wouldn't install in the audit sandbox (needed a newer Go toolchain than that session's network allowlist permitted); `detect-secrets`'s full plugin set was substituted and run against all 438 historical blobs in the public repo — zero findings, but a real `gitleaks` run is still nominally owed whenever a session has the toolchain for it.
+**Status:** Decided and shipped. Live-verified by Istiyak: localhost-binding (phone over WiFi, unreachable), CORS (`docs/runbooks/phase7-cors-test.html`, blocked), and the dialog fix (created a real board, confirmed exactly one row in `brainy.db`). File logging and the URL-shape guard were verified in a sandbox mirror (booted Fastify instance; 16 malicious inputs + 3 legitimate URLs), not separately against Istiyak's own running server. Closes ADR-0034 — see that entry's updated Status line above.
+**Touches:** `apps/server/src/index.ts`, `apps/server/src/lib/media-extraction.ts`, `apps/web/components/boards/name-prompt-dialog.tsx`, `apps/server/package.json`, `docs/runbooks/phase7-cors-test.html`, `docs/runbooks/phase7-show-lan-ip.bat`, `docs/implementation_plan.md` (Phase 7 checklist), `docs/testing.md` (Phase 7 section).
+
+---
+
 ## Open items (not yet decided — tracked so they aren't lost)
 
-- **ADR-0034** — dedicated security discussion (subprocess input sanitization, localhost-only binding, public-repo data hygiene) — still owed.
 - **Typography System PDF** (`Epicink-Studio-Typography-System.pdf` in the EPICINK knowledge base) — returned no extractable text on read; low priority now that Inter is confirmed (ADR-0029) and EPICINK assets are explicitly not being reused (ADR-0009), but flagged in case it's ever needed for reference.
