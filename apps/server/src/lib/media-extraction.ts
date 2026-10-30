@@ -294,7 +294,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 // at the same time. This is the ONE place `data.url` is read before a MediaSource gets
 // built, so every caller (downloadAudioFromUrl, sourceKeyFor indirectly via mediaSourceFor)
 // benefits without needing its own copy of this check.
-function isHttpUrl(value: unknown): value is string {
+export function isHttpUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
   try {
     const parsed = new URL(value);
