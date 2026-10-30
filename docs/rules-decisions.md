@@ -995,6 +995,15 @@ Generation is blocked outright in Manual Input mode (ADR-0019) with a clear toas
 
 ---
 
+### ADR-0107 — Branch-per-phase git workflow, starting after Phase 6's first commit
+
+**Decision:** Phase 6's entire accumulated history (multi-provider AI chat backend, YouTube Outliers integration, mindmap/video nodes, canvas connector redesign, keyboard shortcuts, empty-states polish — ADR-0098 through ADR-0106) was committed and pushed directly to `main` in a single commit (`cdcb098`), with no branching, since no branch convention existed yet and local had never diverged from `origin/main` before this. Istiyak explicitly signed off on that as a one-time exception ("ok. i am pushing main to main in git for this time") and asked that **every phase from here on gets its own branch** instead of committing straight to `main`.
+**Rationale:** Extends this project's existing "no git until a round is tested and verified" caution (the standing rule that held for all of Phase 6 until this point) into the git structure itself — a phase's in-progress work lives on its own branch, isolated from `main`, until Istiyak has verified it end-to-end and is ready to merge. Keeps `main` always in a known-good, pushed state rather than accumulating a long run of untested commits the way Phase 6 did.
+**Status:** Decided, not yet exercised. Phase 6 itself already landed on `main` directly (see above) — this applies starting with whatever comes next. Practically: before the first commit of a new phase, branch off with something like `git checkout -b phase-7` (name matched to the phase), commit that phase's work there, and only merge into `main` (and push) once Istiyak has confirmed the phase is fully tested — mirroring the same "verify before committing" discipline Phase 6 used, just scoped to a branch instead of relying on holding off `git` entirely.
+**Touches:** Process/workflow only — no code. Applies to all future phases.
+
+---
+
 ## Open items (not yet decided — tracked so they aren't lost)
 
 - **ADR-0034** — dedicated security discussion (subprocess input sanitization, localhost-only binding, public-repo data hygiene) — still owed.
