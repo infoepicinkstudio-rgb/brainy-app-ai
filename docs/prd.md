@@ -149,8 +149,13 @@ Paste any URL that isn't a YouTube/Instagram video link (e.g. a LinkedIn post, a
 | 5 | Video nodes | YouTube/Instagram thumbnail nodes, lazy extraction pipeline, `extraction_cache` | Pasting a YouTube link renders a thumbnail node instantly; connecting it to a chat node and asking a question about its content triggers extraction once, caches it, and a second question does not re-trigger extraction |
 | 6 | Polish + remaining providers | OpenAI/Gemini adapters enabled, outliers panel, mindmap output node | All three provider node types fully functional when configured; outliers panel returns real channel data; a Mindmap node can be generated from a chat response |
 | 7 | Security hardening | Subprocess input sanitization, localhost-binding verification, public-repo hygiene pass | A deliberately malformed/malicious URL pasted into a video node cannot execute anything beyond the intended yt-dlp call; backend is confirmed unreachable from outside localhost; a dry-run of "what would get published" contains no secrets or personal board content |
+| 8 | Backlog & pending leftovers | Closes out every open bug, every shipped-but-never-live-confirmed item from Phases 5/6, unfinished Could-have features (F-22, etc.), the lint/test/CI decision, and repo hygiene (branches, `gitleaks`, `LICENSE`) | Every item in `implementation_plan.md`'s Phase 8 checklist is either closed-and-verified or explicitly re-parked with a reason; no doc claims something is done that the repo doesn't back up |
+| 9 | Product overhaul / UI-UX | Scoped in its own session (ADR-0109) — candidates: per-screen UX pass, accessibility audit, dark mode | TBD at scoping |
+| 10 | Motion, interaction & design | Scoped in its own session (ADR-0109) — toolbar/canvas micro-interactions, transition consistency | TBD at scoping |
+| 11 | Regression testing | Scoped in its own session (ADR-0109) — full re-run of `testing.md`'s Phase 0–10 checklist | TBD at scoping |
+| 12 | Final product review & sign-off | Scoped in its own session (ADR-0109) — `audit.md` reality-check, clean-install check, docs-consistency pass | TBD at scoping |
 
-No phase requires anything from a later phase — verified explicitly against this constraint when the roadmap was set (see ADR-0040, ADR-0041 for the one violation caught and fixed during scoping).
+No phase requires anything from a later phase — verified explicitly against this constraint when the roadmap was set (see ADR-0040, ADR-0041 for the one violation caught and fixed during scoping). Phases 8–12 and the per-phase discuss → finalize → document → build routine are defined in ADR-0109.
 
 ---
 

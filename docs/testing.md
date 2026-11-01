@@ -415,3 +415,18 @@ Legend: `[ ]` not yet run · `[x]` passes · `[~]` partially implemented/adjuste
 - [x] Paste a deliberately malformed/shell-metacharacter-laden "URL" into a video node — confirm nothing executes beyond the intended yt-dlp call — 16 malicious/malformed inputs tested against `isHttpUrl`/`mediaSourceFor` in a sandbox mirror; every one rejected, 3 legitimate URLs still worked
 - [x] Confirm the backend is unreachable from another device on the same network (not just unreachable from "outside" in the abstract) — Istiyak confirmed from his phone over the same WiFi, using `docs/runbooks/phase7-show-lan-ip.bat`
 - [x] Run a full-history `gitleaks` scan — confirm clean before any public-repo step — `gitleaks` itself wouldn't install in the audit sandbox; `detect-secrets`'s full plugin set substituted against all 438 historical blobs — zero findings (a real `gitleaks` run is still owed when the toolchain allows it)
+
+---
+
+## Phase 8 — Backlog & pending leftovers
+
+Manual confirmation cases, mirroring `implementation_plan.md`'s Phase 8 checklist. Most items
+there ARE the test case (e.g. "confirm live" items) — listed separately here only where the
+check is more involved than a single click:
+
+- [ ] BUG-035 repro, after a fix: the previously-failing shortcut(s) now fire in the same browser/page where they failed before
+- [ ] Repeat-reference caching: ask a chat node the same source-based question twice; confirm the second ask does not re-trigger extraction (check server logs/timing, not just the UI)
+- [ ] Paste 3+ video links in quick succession; confirm `EXTRACTION_CONCURRENCY` actually caps concurrent extractions rather than all starting at once
+- [ ] A private/region-locked video or a corrupt upload: confirm the failure state displayed is a genuine failure, not BUG-029's false-failure pattern
+- [ ] Once OpenAI/Gemini keys are funded: repeat F-13's synthesis test cases against both providers (ports the stub item already sitting in Phase 6's own test section)
+- [ ] `npm run lint` / the chosen test command actually run clean on a fresh clone, once Phase 8 scaffolds them

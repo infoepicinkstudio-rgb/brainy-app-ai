@@ -658,7 +658,111 @@ before. Git remains untouched for all of it, same standing instruction as above.
 
 ---
 
-## Not yet scheduled (owed, per `agents.md` §6 / `rules-decisions.md` open items)
+## Phase 8 — Backlog & pending leftovers
 
-- [ ] Decide code style/lint/automated-testing/branching/CI conventions (currently undecided — do not silently assume defaults beyond what's already in `agents.md` §6)
+**Scoped with Istiyak at session start (ADR-0109) — the new convention going forward:
+every phase from here on gets its own discuss → finalize → document → build session.
+Phase 8 specifically closes out everything still open from Phases 0–7 before any new
+product surface (Phase 9+) is touched.**
+
+**Objective:** nothing left over from Phases 0–7 is quietly assumed done. Every open bug is
+either fixed or explicitly re-parked with a reason; every "shipped but never live-confirmed"
+item from Phases 5/6 is actually confirmed on Istiyak's machine; the process/tooling gap
+(lint/test/CI) is decided and scaffolded; repo hygiene is clean.
+
+**Build checklist:**
+
+*Open bugs*
+- [ ] BUG-035 — diagnose keyboard shortcuts (Ctrl+N etc.) not firing; ask Istiyak exactly which shortcut(s) + browser before touching code
+- [ ] BUG-026/BUG-027/BUG-028 — confirm with Istiyak these are genuinely solid on his machine, then bump their `bugs.md` Status lines from "In progress" to "Resolved" (narrative in `claude/phase-5-status.md` already describes them as live-confirmed; the per-bug status lines were never updated to match)
+
+*Shipped but never live-confirmed (Phase 6)*
+- [ ] Canvas background shade (`accent.25` token) — confirm live
+- [ ] The 4 empty-state spots (Trash, folder view, folders sidebar, chat node) — confirm live
+- [ ] Connector redesign's final round (arrowhead resize + drag-preview gradient) — confirm live
+
+*Shipped but never live-confirmed (Phase 5)*
+- [ ] Repeat-reference caching (second question about the same source doesn't re-run extraction)
+- [ ] A real article-link scrape (ADR-0094) against an actual non-media URL
+- [ ] ADR-0092's concurrency cap under real load (several videos pasted at once)
+- [ ] A genuine extraction-failure case (private/region-locked video, corrupt upload) — the *false*-failure variant (BUG-029) is fixed; a *true* failure's display isn't re-checked
+- [ ] Audio node upload and upload-sourced video specifically
+
+*Unfinished Could-/Should-have features from current scope*
+- [ ] F-22 — OpenAI/Gemini chat nodes fully enabled (currently honest stubs) — needs funded API keys
+- [ ] Native API path live-verify (Phase 4's own open items): SSE against a real prompt, F-13 synthesis, F-20 retry, F-29 running cost total — same funded-key blocker as F-22
+- [ ] `youtube_credentials` DB migration run for real
+- [ ] A real "Generate mindmap" click, confirmed end to end
+- [ ] A real Manual Input round-trip, confirmed end to end
+- [ ] Cost-tracking reset/clear control (flagged as a post-MVP nicety in `feature.md`)
+
+*Process & tooling (the item this doc has flagged as owed since before Phase 7)*
+- [x] Decide and scaffold lint/formatter conventions — ESLint flat config added for `apps/server` (none existed before; `apps/web` already had one via `eslint-config-next`), root `lint` script now runs both workspaces; Prettier configured at the root (`.prettierrc.json`/`.prettierignore`) — verified clean on a sandbox mirror (`npm run lint -w apps/server`: 0 errors)
+- [x] Decide and scaffold an automated-test framework — Vitest added to `apps/server` (`npm run test`), with a real first suite: 24 tests formalizing Phase 7's `isHttpUrl` security audit (16 malicious inputs + 3 legitimate URLs, all passing) instead of leaving that verification as a one-off sandbox check. **Caught its own real bug before landing:** Istiyak's first `npm install` surfaced 2 critical findings — both `tinypool`, pulled in transitively by `vitest@3.x` (prototype-pollution-to-RCE, every `tinypool` version ≤2.1.1 is vulnerable, and `vitest@3.x` pins `^1.1.1` so it can never resolve a patched one). Root-caused and fixed by bumping to `vitest@4.1.12` (not the `npm audit fix --force`-suggested `5.x` — v4 dropped `tinypool` as a dependency entirely, a smaller jump that fully closes it). Verified in a clean sandbox mirror before pushing: 24/24 tests still pass, lint/build still clean, `npm audit` critical count 0 (was 2).
+- [x] Decide CI conventions — `.github/workflows/ci.yml` added: lint + test + build on every push/PR to `main`. (The device bridge can't write under `.github/` directly — Istiyak created this one file himself from the exact content handed to him.)
+- [x] Branching convention is already decided (ADR-0107, branch-per-phase) — followed starting with this phase (`phase-8-backlog`)
+- [ ] Prettier reformat — configured but not yet applied; running it touches ~85 files in one pass (expected, nothing's been through a formatter before). Decided to run it as its own isolated commit, never mixed with logic changes — handed to Istiyak to run himself (`npx prettier --write .`) rather than pushed file-by-file through the device bridge
+- [ ] `apps/web`'s first-ever full lint run surfaced 44 pre-existing errors: 39 are `tailwindcss/no-arbitrary-value` on `text-[10px]`/`text-[11px]` font sizes — not sloppy code, a real gap (the token system covers color only, never a typography/size scale) — catalogued for Phase 9 rather than patched here, since it needs an actual token decision, not a lint fix. Remaining 5: 3 unescaped apostrophes (trivial), 2 flagged by `eslint-config-next`'s `core-web-vitals` ruleset as a possible cascading-render pattern (needs real review). CI will show these as known-red on `apps/web`'s lint step until Phase 9 or a dedicated follow-up addresses them.
+
+*Repo/git hygiene*
+- [ ] Delete merged local branches on Istiyak's machine (`phase-4-chat-node`, `phase-5-extraction-pipeline`, `phase-7-security-hardening`)
+- [x] Run a real `gitleaks` scan — installed via a direct GitHub-release download (unlike Phase 7's session, where the Go toolchain route was blocked); 18 commits scanned, **no leaks found**. Closes the caveat ADR-0108 left open.
+- [x] Decide what to do about `npm audit` findings — re-ran monorepo-wide (not just `apps/server`, which is what Phase 7 audited): 17 findings (9 low, 4 moderate, 4 high), not 5 — the extra 12 are all `apps/server`'s own 5 (esbuild/drizzle-kit chain, xlsx, unchanged) plus Storybook/style-dictionary's transitive deps, which Phase 7 never saw. New high: `webpack-dev-middleware` path-traversal, reachable only through Storybook's dev server, never the shipped app. **Decision: log only, no action** — same reasoning Phase 7 already applied to esbuild/drizzle-kit (dev-only tooling, not exposed at runtime).
+- [x] Add a `LICENSE` file — "All rights reserved" (matches reality: a personal tool that happens to be on a public repo, not an invitation to reuse it)
+
+*Performance & cleanup (deferred by Istiyak at Phase 5 close)*
+- [ ] Extraction/local-model performance pass (whisper model size, GPU accel if available, tuning `EXTRACTION_CONCURRENCY`)
+- [ ] Post-build cleanup pass (`node_modules`/`.next` build artifacts, `models/` dir hygiene — "project is getting heavier")
+
+*Flagged for the future, not scheduled as work in this phase*
+- [ ] Hosting readiness (Istiyak: "might host it eventually," not a firm plan) — ADR-0047's deployment-readiness checklist (secrets/auth/rollback/legal pages/monitoring) was deliberately not adopted because Brainy is local-only single-user; revisit that checklist if/when hosting actually gets scheduled, not before
+- [ ] F-23 (Figma MCP polish) / F-24 (Notion export) stay exactly where `feature.md` already has them — post-MVP Could-have, not pulled into this phase
+
+**Depends on:** Phases 0–7 (this phase closes their open items; adds no new product surface).
+**Verify with:** `testing.md` Phase 8 section.
+
+---
+
+## Phase 9 — Product overhaul / UI-UX
+
+**To be scoped in its own session, per the Phase 8+ convention (ADR-0109).** Candidate areas
+raised during Phase 8's scoping discussion: a per-screen UX pass using the `design-critique`/
+`design-system` skills; an accessibility audit (WCAG — `accessibility-review` skill; Storybook's
+`addon-a11y` is already installed but unexercised); dark mode (ADR-0027 — "not scoped for MVP,"
+not excluded); information-architecture/navigation consistency. Desktop-only confirmed (no
+responsive/mobile work) — Istiyak confirmed Brainy stays a desktop tool.
+
+---
+
+## Phase 10 — Motion, interaction & design
+
+**To be scoped in its own session, per the Phase 8+ convention (ADR-0109).** Note for whoever
+scopes this: an older ADR (the toolbar rebuild, `rules-decisions.md`) already says real
+interaction/motion work was deliberately deferred "to Phase 8 for the whole product" — that
+was the *old* phase numbering; it refers to **this** phase under the current numbering. Candidate
+areas: toolbar/button micro-interactions, canvas pan/zoom feel, node drag/connect feedback,
+transition consistency app-wide.
+
+---
+
+## Phase 11 — Regression testing
+
+**To be scoped in its own session, per the Phase 8+ convention (ADR-0109).** Base plan: re-run
+`testing.md`'s full per-phase manual checklist (Phases 0–10) end to end, plus anything Phases
+8–10 touched. If Phase 8 picks a test framework, this is the first phase where it'd actually
+get used for real regression coverage rather than just existing.
+
+---
+
+## Phase 12 — Final product review & sign-off
+
+**To be scoped in its own session, per the Phase 8+ convention (ADR-0109).** Base plan:
+`docs/audit.md`'s "planned vs. actually built" reality-check, a final clean-install check, a
+docs-consistency pass across `implementation_plan.md`/`testing.md`/`rules-decisions.md` (the
+same kind of gap just closed for Phase 7), and a README accuracy check.
+
+---
+
+## Not yet scheduled
+
 - [ ] Resolve the unreadable Typography System PDF, if it ever becomes relevant (currently low priority — Inter + independent palette already confirmed)
