@@ -1,0 +1,37 @@
+name: CI
+
+# Phase 8 (ADR-0109): the repo had no CI at all before this. Deliberately minimal -
+# lint + test + build on every push/PR against main, matching the "vibe coded feel,
+# professionally executed" principle (ADR-0007) rather than importing a heavy pipeline
+# a solo local-first project doesn't need yet.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build design tokens
+        run: npm run build -w packages/tokens
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
