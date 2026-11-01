@@ -1,0 +1,12 @@
+node_modules
+.next
+dist
+build
+out
+backups
+brainy.db*
+packages/tokens/build
+docs/
+*.md
+.claude
+.agents
